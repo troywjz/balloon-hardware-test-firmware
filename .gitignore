@@ -1,8 +1,12 @@
-**/build/
+**/build/**
+!FCFM/build/Debug/
+!FCFM/build/Debug/*.hex
+!FCFM/build/Debug/*.bin
+!ground-station/build/Debug/
+!ground-station/build/Debug/*.hex
+!ground-station/build/Debug/*.bin
 **/mx.scratch/
 .vscode/
-*.hex
-*.bin
 *.elf
 *.map
 *.log

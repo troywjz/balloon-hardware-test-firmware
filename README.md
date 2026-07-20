@@ -1,7 +1,8 @@
-# Balloon Firmware
+# Balloon Hardware Test Firmware
 
-本仓库保存浮力气球 Demo 的飞控、地面站和共享嵌入式代码，作为后续正式飞控
-固件开发的独立基线。
+本仓库保存浮力气球 Demo 的飞控板与地面站板硬件测试固件，以及两端共用的嵌入式
+代码。它用于板级上电、传感器、存储、射频和执行器验证，并作为后续正式飞控固件
+开发前的硬件验证基线；不应把本仓库中的测试任务模式视为正式飞行控制软件。
 
 ## 当前版本
 
@@ -19,6 +20,20 @@
 - `ground-station/`：地面站工程。
 - `common/`：两套固件共用的射频协议、E28/SX1281 驱动和日志代码。
 - `E28_SX1281_TEST_GUIDE.md`：双板射频通信测试说明。
+
+## 仓库内烧录文件
+
+仓库直接保留当前版本编译得到的 HEX（Intel HEX，英特尔十六进制）和 BIN
+（Binary，二进制）烧录文件，便于不重新编译就进行硬件测试：
+
+- `FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.2.9.hex`
+- `FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.2.9.bin`
+- `ground-station/build/Debug/GROUND_STATION_BOARD_TEST_V1.1.0.7.hex`
+- `ground-station/build/Debug/GROUND_STATION_BOARD_TEST_V1.1.0.7.bin`
+
+同一目录还保留不带版本号的通用名和工程默认输出名。CMake 缓存、中间目标文件、
+ELF（Executable and Linkable Format，可执行与可链接格式）和 MAP（链接映射）文件
+仍不纳入版本管理。
 
 ## 编译
 
@@ -111,6 +126,6 @@ mission start antenna
 
 - CubeMX 重新生成代码前先确认用户代码区和安全初始电平不会被覆盖。
 - 新固件发布前必须执行 `--clean-first` 全量编译。
-- 不提交 `build` 目录和编译产物；烧录文件通过 GitHub Release 发布。
+- 提交 `build/Debug` 顶层的 `.hex` 和 `.bin` 烧录文件，但不提交其他构建缓存和中间文件。
 - 硬件版本和固件版本分别维护，例如硬件 V1.0.2 对应固件 V1.0.2.9。
 - 正式控制功能必须先定义故障处理和安全边界，再接入执行器输出。
