@@ -1,0 +1,10 @@
+**/build/
+**/mx.scratch/
+.vscode/
+*.hex
+*.bin
+*.elf
+*.map
+*.log
+Thumbs.db
+.DS_Store

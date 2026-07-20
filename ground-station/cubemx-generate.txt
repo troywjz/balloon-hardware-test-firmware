@@ -1,0 +1,3 @@
+config load GroundStation.ioc
+project generate
+exit
