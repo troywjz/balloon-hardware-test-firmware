@@ -1,4 +1,4 @@
-# 飞控 V1.0.2.9 与 E28 双板测试指南
+# 飞控 V1.0.2.10 与 E28 双板测试指南
 
 适用工程：
 
@@ -9,8 +9,8 @@
 
 ## 1. 版本与功能边界
 
-- 飞控硬件：`V1.0.2`，飞控固件：`V1.0.2.9`。
-- 地面站硬件：`V1.1.0`，地面站固件：`V1.1.0.7`。
+- 飞控硬件：`V1.0.2`，飞控固件：`V1.0.2.10`。
+- 地面站硬件：`V1.1.0`，地面站固件：`V1.1.0.8`。
 - 飞控原有 ADC、IMU、I²C、GNSS、SD、泵、阀、电机和舵机功能继续保留。
 - 新增 E28-2G4M20SX（SX1281）链路、正式指令、ACK、遥测和失联保护。
 
@@ -25,8 +25,8 @@
 成功后烧录：
 
 ```text
-飞控：build\Debug\FCFM_BOARD_TEST_V1.0.2.9.hex
-地面站：build\Debug\GROUND_STATION_BOARD_TEST_V1.1.0.7.hex
+飞控：build\Debug\FCFM_BOARD_TEST_V1.0.2.10.hex
+地面站：build\Debug\GROUND_STATION_BOARD_TEST_V1.1.0.8.hex
 ```
 
 使用 STM32CubeProgrammer：连接方式选“USB”→“连接”→“擦除和编程”→选择 HEX →
@@ -128,6 +128,8 @@ fc servo 1 1500 500
 
 正常动作指令先返回 `started`，动作到时关闭后返回 `completed`。未本地解锁、范围
 错误、重复、过期、链路失效或执行器忙时返回 `rejected` 和明确原因。
+飞控本地解锁不按时间自动失效，单次动作允许 50～30000 ms；结束测试应执行
+`fc stop` 或飞控本地 `actuator disarm`，使输出停止并重新上锁。
 
 9. 结束任务：
 

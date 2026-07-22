@@ -1,131 +1,277 @@
-# Balloon Hardware Test Firmware
+# Balloon 硬件测试固件
 
-本仓库保存浮力气球 Demo 的飞控板与地面站板硬件测试固件，以及两端共用的嵌入式
-代码。它用于板级上电、传感器、存储、射频和执行器验证，并作为后续正式飞控固件
-开发前的硬件验证基线；不应把本仓库中的测试任务模式视为正式飞行控制软件。
+本仓库保存浮力气球 Demo 的飞控板与地面站板硬件测试固件、公共通信协议和可直接
+烧录的固件文件。它用于板级上电、传感器、存储、射频和执行器验证，是正式飞控开发前
+的硬件验收基线；其中的测试任务模式不等同于正式飞行控制软件。
 
 ## 当前版本
 
-- 飞控硬件：V1.0.2；飞控固件：V1.0.2.9。
-- 地面站硬件：V1.1.0；地面站固件：V1.1.0.7。
+- 飞控硬件：`V1.0.2`；飞控固件：`V1.0.2.10`。
+- 地面站硬件：`V1.1.0`；地面站固件：`V1.1.0.8`。
 - MCU（Microcontroller Unit，微控制器）：STM32F405RGT6。
+- 串口：USB CDC（Communications Device Class，通信设备类），115200、8-N-1、CRLF。
 
-当前代码已经覆盖板级安全状态、USB 串口、传感器检测、SD 卡、E28/SX1281
-射频通信、任务指令、遥测、失联保护和 CSV（Comma-Separated Values，逗号分隔值）
-日志。姿态解算、状态估计、闭环高度控制和正式任务状态机仍需在后续开发中逐步完成。
+当前代码覆盖安全初始状态、USB 串口命令、传感器检测、TF 卡、E28-2G4M20SX/SX1281
+通信、任务指令、遥测、失联保护、执行器测试和 CSV（Comma-Separated Values，
+逗号分隔值）日志。姿态解算、状态估计、闭环高度控制和正式任务状态机仍属于后续开发。
 
-## 目录
+## 目录与说明
 
-- `FCFM/`：飞控工程；`FCFM` 为沿用的现有工程目录名。
+- `FCFM/`：飞控工程，目录名沿用现有工程名称。
 - `ground-station/`：地面站工程。
-- `common/`：两套固件共用的射频协议、E28/SX1281 驱动和日志代码。
-- `E28_SX1281_TEST_GUIDE.md`：双板射频通信测试说明。
+- `common/`：公共射频驱动、通信协议和日志代码。
+- `E28_SX1281_TEST_GUIDE.md`：双板射频通信逐步测试指南。
+- [Releases](https://github.com/troywjz/balloon-hardware-test-firmware/releases)：版本化烧录文件。
 
-## 仓库内烧录文件
+更详细的板级说明见 `FCFM/README.md` 和 `ground-station/README.md`。
 
-仓库直接保留当前版本编译得到的 HEX（Intel HEX，英特尔十六进制）和 BIN
-（Binary，二进制）烧录文件，便于不重新编译就进行硬件测试：
+## 重要安全规则
 
-- `FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.2.9.hex`
-- `FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.2.9.bin`
-- `ground-station/build/Debug/GROUND_STATION_BOARD_TEST_V1.1.0.7.hex`
-- `ground-station/build/Debug/GROUND_STATION_BOARD_TEST_V1.1.0.7.bin`
+1. 两端没有安装匹配的 2.4 GHz 天线时，禁止执行任何会发射的命令，包括
+   `radio arm antenna`、`radio ping`、`radio send ...` 和 `mission start antenna`。
+2. SX1281 设置为最低 `-18 dBm` 只是射频芯片参数，不能代表 E28 外置功率放大器后的
+   实际天线口功率。
+3. 飞控只接 USB 时不能完整供电给 E28、TF 卡和执行器；射频、存储和执行器联调需要
+   正确接入电池侧电源。
+4. 执行器上电后一次只测试一路，首次测试卸除机械负载并从短时间、低占空比开始。
+5. 飞控执行器本地解锁没有自动超时，但任务停止、失联保护、复位和断电都会撤销解锁。
+6. 单次执行器动作允许 `50～30000 ms`；空心杯电机占空比仅允许 `1%～30%`。
+7. `test` 是无执行器、无射频发射的综合检测命令。
 
-同一目录还保留不带版本号的通用名和工程默认输出名。CMake 缓存、中间目标文件、
-ELF（Executable and Linkable Format，可执行与可链接格式）和 MAP（链接映射）文件
-仍不纳入版本管理。
-
-## 编译
-
-工程使用 STM32CubeMX 生成的 HAL（Hardware Abstraction Layer，硬件抽象层）代码，
-通过 CMake、Ninja 和 GNU Arm Embedded Toolchain 编译。
+## 可直接烧录的文件
 
 飞控：
 
-```powershell
-cd FCFM
-cmake --preset Debug
-cmake --build --preset Debug --clean-first
-```
-
-烧录文件：
-
 ```text
-FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.2.9.hex
+FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.2.10.hex
+FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.2.10.bin
 ```
 
 地面站：
 
+```text
+ground-station/build/Debug/GROUND_STATION_BOARD_TEST_V1.1.0.8.hex
+ground-station/build/Debug/GROUND_STATION_BOARD_TEST_V1.1.0.8.bin
+```
+
+同一目录保留不带版本号的通用别名。HEX（Intel HEX，英特尔十六进制）适合通过
+STM32CubeProgrammer 烧录；BIN（Binary，二进制）供明确指定 Flash 起始地址的工具使用。
+
+## 编译与烧录
+
+分别进入两个工程目录执行：
+
 ```powershell
-cd ground-station
 cmake --preset Debug
 cmake --build --preset Debug --clean-first
 ```
 
-烧录文件：
+使用 STM32CubeProgrammer 通过 USB DFU（Device Firmware Upgrade，设备固件升级）
+模式烧录对应 HEX。烧录后将 BOOT0 恢复低电平并重新上电，再打开 USB 串口监视器。
 
-```text
-ground-station/build/Debug/GROUND_STATION_BOARD_TEST_V1.1.0.7.hex
-```
+## 飞控本地命令
 
-## 烧录与串口
+命令在飞控 USB 串口中发送，不区分大小写；末尾使用 CRLF。
 
-使用 STM32CubeProgrammer，通过 USB DFU（Device Firmware Upgrade，设备固件升级）
-模式烧录对应 HEX 文件。烧录完成后将 BOOT0 恢复为低电平并重新上电。
+### 基础状态与板级检测
 
-USB CDC（Communications Device Class，通信设备类）串口参数：
+| 命令 | 作用 |
+|---|---|
+| `help` 或 `?` | 显示主要命令提示 |
+| `version` | 显示硬件、固件和通信负载版本 |
+| `status` | 显示系统模式、电源、IMU、TF 卡、日志、射频和执行器状态 |
+| `test` | 依次检测 USB、ADC、输入、射频无发射探测、IMU、I²C、GNSS 和 TF 卡读写 |
+| `adc` | 读取电池电压采样的 ADC（Analog-to-Digital Converter，模数转换器）原始值和估算电压 |
+| `inputs` | 读取 IMU 中断、射频 BUSY/DIO1、电机故障和 TF 卡检测输入 |
+| `imu` | 比较 ICM-42688 不同 SPI（Serial Peripheral Interface，串行外设接口）读取事务并输出探测结果 |
+| `imureset` | 执行 ICM-42688 复位和 WHO_AM_I 探测 |
+| `gnss <100..3000ms>` | 在指定时间内捕获 GNSS（Global Navigation Satellite System，全球卫星导航系统）串口数据 |
+| `sd` | 查看 TF 卡挂载、容量、日志占用和错误状态 |
+| `sdtest` | 写入、读回、校验并删除临时测试文件；任务日志占用 TF 卡时会拒绝 |
 
-```text
-115200 baud, 8 data bits, no parity, 1 stop bit, CRLF
-```
+### I²C 与环境传感器
 
-飞控常用检测命令：
+I²C 是 Inter-Integrated Circuit，两线串行总线。飞控通过 TCA9548 多路复用器连接外部
+传感器。
 
-```text
-version
-test
-sensors all
-sdtest
-actuator status
-```
+| 命令 | 作用 |
+|---|---|
+| `i2c` | 扫描上游 I²C，总线上应能看到 TCA9548 地址 `0x70` |
+| `i2call` | 依次扫描 TCA9548 的 0～7 通道 |
+| `i2c mux <0..7>` | 选择并扫描指定通道 |
+| `i2c diag <0..7>` | 对指定通道执行多速率、总线电平和气压计地址诊断 |
+| `baro <0..7>` | 自动识别并读取指定通道的 BMP3/BMP58x 气压计 |
+| `baro all` | 读取 XH7、XH8、XH9 三颗 BMP580，并计算 XH8/XH9 相对 XH7 的压差 |
+| `sht40` | 读取 XH10 上的 SHT40 温度和相对湿度 |
+| `sensors all` | 集中执行三颗 BMP580 和一颗 SHT40 的读取 |
 
-执行器必须先在飞控本地解锁，解锁有效期为 60 秒：
+当前固定映射：
+
+| 接口 | 通道 | 模块 | 建议对象 |
+|---|---:|---|---|
+| XH7 | 0 | BMP580 | 外界大气，压差基准 |
+| XH8 | 1 | BMP580 | 氦气升力囊 |
+| XH9 | 2 | BMP580 | 空气压载囊 |
+| XH10 | 3 | SHT40 | 外界温湿度 |
+
+### 执行器命令
+
+先解锁：
 
 ```text
 actuator arm
-actuator valve 1 500
-actuator pump 1 fwd 500
-actuator motor 1 fwd 10 500
-actuator servo 1 1500 1000
-actuator stop
 ```
 
-`fwd` 是 forward（正向），`rev` 是 reverse（反向）。一次只测试一路执行器，
-首次测试应卸除机械负载，并从短时间、低占空比开始。
+| 命令 | 参数和作用 |
+|---|---|
+| `actuator status` | 查看是否解锁、当前动作和剩余时间 |
+| `actuator valve <1|2> <50..30000ms>` | 打开指定电磁阀，到时自动关闭 |
+| `actuator pump <1|2> <fwd|rev> <50..30000ms>` | 指定泵正向或反向运行 |
+| `actuator motor <1|2> <fwd|rev> <1..30%> <50..30000ms>` | 指定空心杯电机方向、占空比和时长 |
+| `actuator servo <1|2> <1000..2000us> <50..30000ms>` | 指定舵机脉宽和保持时长 |
+| `actuator stop` | 立即停止当前动作并上锁 |
+| `actuator disarm` | 与 `actuator stop` 相同，立即停止并上锁 |
 
-地面站常用检测命令：
+`fwd` 是 forward（正向），`rev` 是 reverse（反向）。兼容别名包括 `outputs`、
+`arm outputs`、`stop` 和 `disarm`，建议新测试统一使用 `actuator ...` 形式。
+
+通道对应：阀1/2、泵1/2、空心杯电机1/2和舵机1/2。当前动作未结束时，其他动作命令
+会因 `busy`（忙碌）被拒绝。
+
+### 飞控射频与任务命令
+
+| 命令 | 作用 |
+|---|---|
+| `radio` 或 `radio status` | 查看 E28 电源、模式、授权、引脚、IRQ 和收发计数 |
+| `radio probe` | 无发射读取 SX1281 状态和分组类型 |
+| `radio power off` | 复位射频、三态化总线并关闭控制输出，供安全拆除电池侧电源 |
+| `radio power on` | 重新允许射频总线，之后还要执行 `radio init` |
+| `radio init` | 初始化 SX1281，默认不授予发射权限 |
+| `radio rx` | 进入接收模式 |
+| `radio arm antenna` | 确认已安装天线，临时授予 60 秒手动发射权限 |
+| `radio ping` | 发送一帧飞控 PING |
+| `radio send <文本>` | 发送一帧文本，负载不超过公共协议允许长度 |
+| `radio disarm` 或 `radio reset` | 取消发射授权并复位射频 |
+| `mission start antenna` | 确认天线后进入任务通信并开始飞控 CSV 日志 |
+| `mission stop` | 停止执行器、上锁、复位射频并异步同步关闭日志 |
+
+手动 `radio arm antenna` 的 60 秒限制没有取消；只有执行器本地解锁改为无时间限制。
+任务模式的射频授权随任务会话保持，直到 `mission stop`、射频错误或安全状态触发。
+
+## 地面站本地命令
+
+命令在地面站 USB 串口中发送。
+
+### 基础、存储和 Flash
+
+| 命令 | 作用 |
+|---|---|
+| `help` 或 `?` | 显示主要命令提示 |
+| `version` | 显示地面站硬件、固件和协议版本 |
+| `status` | 显示射频、供电、Flash、TF 卡、日志、内存和任务状态 |
+| `test` | 执行板级状态、TF 卡临时文件读写和射频无发射探测 |
+| `adc` | 读取 USB 供电采样和估算电压 |
+| `flash` | 读取 W25Q128 的 JEDEC（Joint Electron Device Engineering Council，联合电子器件工程委员会）ID |
+| `sd` | 查看卡检测回退、挂载、日志文件和丢记录计数 |
+| `sdtest` | 写入、读回、校验并删除临时文件 |
+| `sd force on` | 忽略硬件卡检测问题并强制尝试使用 TF 卡 |
+| `sd force off` | 卸载文件系统、停止自动回退，供安全取卡 |
+| `sd raw <1|4>` | 使用 1 位或 4 位 SDIO（Secure Digital Input Output，安全数字输入输出）做底层诊断 |
+| `sd mount <1|4>` | 使用指定总线宽度尝试挂载文件系统 |
+
+地面站硬件 V1.1.0 的卡检测网络没有实际接到 MCU，因此正常使用时固件会自动采用与
+`sd force on` 等效的回退；正式配置保持 SDIO 4 位。
+
+### 地面站射频与任务命令
+
+| 命令 | 作用 |
+|---|---|
+| `radio` 或 `radio status` | 查看 E28/SX1281 状态 |
+| `radio probe` | 无发射探测 SX1281 |
+| `radio init` | 初始化射频但保持发射锁定 |
+| `radio rx` | 进入接收模式 |
+| `radio arm antenna` | 确认天线后授予 60 秒手动发射权限 |
+| `radio ping` | 发送一帧地面站 PING |
+| `radio send <文本>` | 发送文本帧 |
+| `radio disarm` 或 `radio reset` | 取消发射授权并复位射频 |
+| `mission start antenna` | 启动任务心跳、遥测接收和地面站 CSV 日志 |
+| `mission stop` | 停止任务通信并异步同步关闭日志 |
+
+## 地面站远程控制飞控
+
+### 启动顺序
+
+1. 两块板断电，分别安装匹配的 2.4 GHz 天线。
+2. 飞控接入电池侧电源，地面站接入 USB；确认两端 `status` 无关键电源故障。
+3. 在地面站发送 `mission start antenna`。
+4. 在飞控发送 `mission start antenna`。
+5. 等待地面站出现 `GS telemetry ... link=1`。
+6. 如需控制执行器，在飞控本地 USB 串口发送 `actuator arm`。
+7. 在地面站 USB 串口发送下面的 `fc ...` 命令。
+
+### 可远程发送的全部飞控命令
+
+| 地面站命令 | 飞控动作 |
+|---|---|
+| `fc status` | 请求一帧飞控状态遥测，不要求执行器解锁 |
+| `fc stop` | 远程急停当前执行器并撤销飞控本地解锁 |
+| `fc valve <1|2> <50..30000ms>` | 控制指定电磁阀 |
+| `fc pump <1|2> <fwd|rev> <50..30000ms>` | 控制指定泵和方向 |
+| `fc motor <1|2> <fwd|rev> <1..30%> <50..30000ms>` | 控制指定空心杯电机 |
+| `fc servo <1|2> <1000..2000us> <50..30000ms>` | 控制指定舵机 |
+
+示例：
 
 ```text
-version
-test
-sdtest
+fc status
+fc valve 1 500
+fc pump 1 fwd 1000
+fc motor 1 fwd 10 1000
+fc servo 1 1500 1000
+fc stop
 ```
 
-## 射频安全
+除 `fc status` 和 `fc stop` 外，远程执行器命令要求：两端处于同一任务会话、飞控本地
+已解锁、参数合法、链路与时间同步有效、当前没有其他动作。地面指令有效期用于判断命令
+是否过期，不限制已经开始的最长 30 秒动作；链路丢失仍会立即触发 failsafe（失联安全
+状态）并停止执行器。
 
-两端安装匹配的 2.4 GHz 天线后，先在地面站、再在飞控执行：
+每条远程命令会收到 ACK（Acknowledgement，确认应答）：
+
+- `started`：动作已经开始。
+- `completed`：动作按计划结束，或状态/停止请求完成。
+- `stopped`：动作被安全逻辑提前停止。
+- `rejected`：命令被拒绝，并附带 `outputs_disarmed`、`busy`、`range`、`expired`、
+  `duplicate_or_old` 或 `link_lost` 等原因。
+
+`fc stop` 会让飞控重新上锁；若还要继续测试执行器，必须回到飞控本地再次执行
+`actuator arm`。
+
+## 任务日志与安全下电
+
+进入任务模式后：
+
+- 飞控生成 `FCDxxxx.CSV`（Flight Controller Data，飞控周期数据）和
+  `FCExxxx.CSV`（Flight Controller Events，飞控事件）。
+- 地面站生成 `GSDxxxx.CSV`（Ground Station Data，地面站接收数据）和
+  `GSExxxx.CSV`（Ground Station Events，地面站事件）。
+
+结束任务建议依次执行：
 
 ```text
-mission start antenna
+地面站：fc stop
+飞控：mission stop
+地面站：mission stop
 ```
 
-结束时先停止飞控任务，再停止两端任务模式。没有安装天线时，严禁初始化发射或进入
-任务通信模式；芯片设置为最低功率不等于天线口没有射频功率。
+然后分别执行 `status`，等待两端均显示 `log_owner=0`，再拔 TF 卡或断电。维护模式下
+没有运行任务日志时，飞控先执行 `actuator disarm` 并确认 `armed=0 action=none`；随后
+先断开电池，再断开 USB。上锁不是电气断电的必要条件，但应作为固定安全操作规程。
 
-## 开发约定
+## 开发与发布约定
 
-- CubeMX 重新生成代码前先确认用户代码区和安全初始电平不会被覆盖。
-- 新固件发布前必须执行 `--clean-first` 全量编译。
-- 提交 `build/Debug` 顶层的 `.hex` 和 `.bin` 烧录文件，但不提交其他构建缓存和中间文件。
-- 硬件版本和固件版本分别维护，例如硬件 V1.0.2 对应固件 V1.0.2.9。
+- CubeMX 重新生成代码前确认用户代码区和安全初始电平不会被覆盖。
+- 新版本必须执行 `cmake --build --preset Debug --clean-first`。
+- 仓库提交 `build/Debug` 顶层当前 `.hex/.bin`，不提交缓存、`.elf`、`.map` 和中间文件。
+- 硬件版本与软件修订号分开，例如硬件 `V1.0.2` 对应固件 `V1.0.2.10`。
 - 正式控制功能必须先定义故障处理和安全边界，再接入执行器输出。

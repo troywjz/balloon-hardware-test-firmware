@@ -1,7 +1,7 @@
 # FCFM 飞控检测与任务固件
 
 - 飞控硬件版本：`V1.0.2`
-- 飞控固件版本：`V1.0.2.9`
+- 飞控固件版本：`V1.0.2.10`
 - MCU：STM32F405RGT6
 
 固件继续保留 ADC、IMU、I²C/TCA9548、GNSS、SDIO、两个阀、两个泵、两个
@@ -91,7 +91,8 @@ sensors all
 actuator arm
 ```
 
-解锁有效期 60 秒，一次只允许一个执行器动作，每次动作限制为 50～3000 ms，
+解锁后不再按时间自动失效，保持到执行 `actuator stop`、`actuator disarm`、任务停止、
+失联保护、复位或断电为止。一次只允许一个执行器动作，每次动作限制为 50～30000 ms，
 空心杯电机占空比限制为 1%～30%。
 
 ```text
@@ -109,9 +110,16 @@ actuator motor 2 rev 10 300
 actuator servo 1 1500 500
 actuator servo 2 1500 500
 actuator stop
+actuator disarm
 ```
 
 首次测试必须卸除机械负载、固定泵和电机，并从短时、低占空比开始。
+
+下电前建议把“上锁”作为固定操作规程，但上锁不是电气上断电的必要条件：断电本身会让
+输出消失。维护模式下先执行 `actuator stop` 或 `actuator disarm`，再用
+`actuator status` 确认 `armed=0`、`action=none`。任务模式下必须先执行
+`mission stop`，再用 `status` 等待 `log_owner=0`，确认日志已经同步、关闭并卸载；
+随后先断开电池，再断开 USB。只执行器上锁并不能代替任务日志的安全收尾。
 
 `fwd` 是 forward（正向）的缩写，`rev` 是 reverse（反向）的缩写。固件中的逻辑
 正向默认对应驱动器 IN1 有效，但这不等于机械安装后的实际充气方向或推力方向。
@@ -140,10 +148,10 @@ SX1281 芯片功率设置为最低档 `-18 dBm`，但 E28 外部 PA 后的实际
 ```text
 fc status
 fc stop
-fc valve <1|2> <50..3000ms>
-fc pump <1|2> <fwd|rev> <50..3000ms>
-fc motor <1|2> <fwd|rev> <1..30%> <50..3000ms>
-fc servo <1|2> <1000..2000us> <50..3000ms>
+fc valve <1|2> <50..30000ms>
+fc pump <1|2> <fwd|rev> <50..30000ms>
+fc motor <1|2> <fwd|rev> <1..30%> <50..30000ms>
+fc servo <1|2> <1000..2000us> <50..30000ms>
 ```
 
 每条指令包含任务号、序号、地面发送时刻、有效期和 CRC16。飞控拒绝重复/旧序号、
@@ -215,7 +223,7 @@ cmake --build --preset Debug --clean-first
 烧录文件：
 
 ```text
-build/Debug/FCFM_BOARD_TEST_V1.0.2.9.hex
+build/Debug/FCFM_BOARD_TEST_V1.0.2.10.hex
 ```
 
 如果使用 CubeMX 重新生成代码，必须确认 PB12 `SPI2_CS_RADIO` 初始输出为低，且
