@@ -125,15 +125,22 @@ actuator arm
 | 命令 | 参数和作用 |
 |---|---|
 | `actuator status` | 查看是否解锁、当前动作和剩余时间 |
-| `actuator valve <1|2> <50..30000ms>` | 打开指定电磁阀，到时自动关闭 |
-| `actuator pump <1|2> <fwd|rev> <50..30000ms>` | 指定泵正向或反向运行 |
-| `actuator motor <1|2> <fwd|rev> <1..30%> <50..30000ms>` | 指定空心杯电机方向、占空比和时长 |
-| `actuator servo <1|2> <1000..2000us> <50..30000ms>` | 指定舵机脉宽和保持时长 |
+| `actuator valve <通道> <时长ms>` | 通道为 1 或 2；打开指定电磁阀 50～30000 ms，到时自动关闭 |
+| `actuator pump <通道> <方向> <时长ms>` | 通道为 1 或 2；方向为 `fwd` 或 `rev`；运行 50～30000 ms |
+| `actuator motor <通道> <方向> <占空比%> <时长ms>` | 通道为 1 或 2；方向为 `fwd` 或 `rev`；占空比 1%～30%；运行 50～30000 ms |
+| `actuator servo <通道> <脉宽us> <时长ms>` | 通道为 1 或 2；脉宽 1000～2000 us；保持 50～30000 ms |
 | `actuator stop` | 立即停止当前动作并上锁 |
 | `actuator disarm` | 与 `actuator stop` 相同，立即停止并上锁 |
 
 `fwd` 是 forward（正向），`rev` 是 reverse（反向）。兼容别名包括 `outputs`、
 `arm outputs`、`stop` 和 `disarm`，建议新测试统一使用 `actuator ...` 形式。
+
+例如，让 1 号电磁阀打开 3 秒：
+
+```text
+actuator arm
+actuator valve 1 3000
+```
 
 通道对应：阀1/2、泵1/2、空心杯电机1/2和舵机1/2。当前动作未结束时，其他动作命令
 会因 `busy`（忙碌）被拒绝。
@@ -176,8 +183,8 @@ actuator arm
 | `sdtest` | 写入、读回、校验并删除临时文件 |
 | `sd force on` | 忽略硬件卡检测问题并强制尝试使用 TF 卡 |
 | `sd force off` | 卸载文件系统、停止自动回退，供安全取卡 |
-| `sd raw <1|4>` | 使用 1 位或 4 位 SDIO（Secure Digital Input Output，安全数字输入输出）做底层诊断 |
-| `sd mount <1|4>` | 使用指定总线宽度尝试挂载文件系统 |
+| `sd raw <总线位宽>` | 总线位宽为 1 或 4；使用指定 SDIO（Secure Digital Input Output，安全数字输入输出）位宽做底层诊断 |
+| `sd mount <总线位宽>` | 总线位宽为 1 或 4；使用指定总线位宽尝试挂载文件系统 |
 
 地面站硬件 V1.1.0 的卡检测网络没有实际接到 MCU，因此正常使用时固件会自动采用与
 `sd force on` 等效的回退；正式配置保持 SDIO 4 位。
@@ -215,10 +222,10 @@ actuator arm
 |---|---|
 | `fc status` | 请求一帧飞控状态遥测，不要求执行器解锁 |
 | `fc stop` | 远程急停当前执行器并撤销飞控本地解锁 |
-| `fc valve <1|2> <50..30000ms>` | 控制指定电磁阀 |
-| `fc pump <1|2> <fwd|rev> <50..30000ms>` | 控制指定泵和方向 |
-| `fc motor <1|2> <fwd|rev> <1..30%> <50..30000ms>` | 控制指定空心杯电机 |
-| `fc servo <1|2> <1000..2000us> <50..30000ms>` | 控制指定舵机 |
+| `fc valve <通道> <时长ms>` | 通道为 1 或 2；远程打开指定电磁阀 50～30000 ms |
+| `fc pump <通道> <方向> <时长ms>` | 通道为 1 或 2；方向为 `fwd` 或 `rev`；远程运行 50～30000 ms |
+| `fc motor <通道> <方向> <占空比%> <时长ms>` | 通道为 1 或 2；方向为 `fwd` 或 `rev`；占空比 1%～30%；远程运行 50～30000 ms |
+| `fc servo <通道> <脉宽us> <时长ms>` | 通道为 1 或 2；脉宽 1000～2000 us；远程保持 50～30000 ms |
 
 示例：
 
