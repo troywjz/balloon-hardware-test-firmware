@@ -30,7 +30,9 @@
 #define USB_RX_QUEUE_SIZE           256U
 #define RADIO_TX_ARM_TIMEOUT_MS     60000U
 #define GROUND_HARDWARE_VERSION     "V1.1.0"
-#define GROUND_FIRMWARE_VERSION     "V1.1.0.7"
+#define GROUND_FIRMWARE_VERSION     "V1.1.0.8"
+#define FLIGHT_ACTUATOR_MIN_DURATION_MS 50UL
+#define FLIGHT_ACTUATOR_MAX_DURATION_MS 30000UL
 #define MISSION_ID                  1U
 #define MISSION_COMMAND_TTL_MS      2000U
 #define MISSION_HEARTBEAT_PERIOD_MS 2000U
@@ -2126,7 +2128,7 @@ static void GroundStation_HandleCommand(char *command, GroundStationStatus *stat
     GroundStation_Send(
         "GS flight: fc pump <1|2> <fwd|rev> <ms> | fc motor <1|2> <fwd|rev> <duty1..30> <ms>\r\n");
     GroundStation_Send(
-        "GS flight: fc servo <1|2> <pulse1000..2000us> <ms>\r\n");
+        "GS flight: fc servo <1|2> <pulse1000..2000us> <ms>; duration=50..30000ms\r\n");
   }
   else if (strcmp(command, "version") == 0)
   {
@@ -2170,10 +2172,11 @@ static void GroundStation_HandleCommand(char *command, GroundStationStatus *stat
                             &extra)) == 2)
   {
     if ((channel < 1U) || (channel > 2U) ||
-        (duration_ms < 50UL) || (duration_ms > 3000UL))
+        (duration_ms < FLIGHT_ACTUATOR_MIN_DURATION_MS) ||
+        (duration_ms > FLIGHT_ACTUATOR_MAX_DURATION_MS))
     {
       GroundStation_Send(
-          "GS command rejected reason=range channel=1..2 duration_ms=50..3000\r\n");
+          "GS command rejected reason=range channel=1..2 duration_ms=50..30000\r\n");
     }
     else
     {
@@ -2195,10 +2198,11 @@ static void GroundStation_HandleCommand(char *command, GroundStationStatus *stat
     reverse = (strcmp(direction, "rev") == 0) ||
               (strcmp(direction, "reverse") == 0);
     if ((channel < 1U) || (channel > 2U) ||
-        (duration_ms < 50UL) || (duration_ms > 3000UL))
+        (duration_ms < FLIGHT_ACTUATOR_MIN_DURATION_MS) ||
+        (duration_ms > FLIGHT_ACTUATOR_MAX_DURATION_MS))
     {
       GroundStation_Send(
-          "GS command rejected reason=range channel=1..2 duration_ms=50..3000\r\n");
+          "GS command rejected reason=range channel=1..2 duration_ms=50..30000\r\n");
     }
     else if (!reverse && (strcmp(direction, "fwd") != 0) &&
         (strcmp(direction, "forward") != 0))
@@ -2227,10 +2231,11 @@ static void GroundStation_HandleCommand(char *command, GroundStationStatus *stat
               (strcmp(direction, "reverse") == 0);
     if ((channel < 1U) || (channel > 2U) ||
         (value < 1U) || (value > 30U) ||
-        (duration_ms < 50UL) || (duration_ms > 3000UL))
+        (duration_ms < FLIGHT_ACTUATOR_MIN_DURATION_MS) ||
+        (duration_ms > FLIGHT_ACTUATOR_MAX_DURATION_MS))
     {
       GroundStation_Send(
-          "GS command rejected reason=range channel=1..2 duty=1..30 duration_ms=50..3000\r\n");
+          "GS command rejected reason=range channel=1..2 duty=1..30 duration_ms=50..30000\r\n");
     }
     else if (!reverse && (strcmp(direction, "fwd") != 0) &&
         (strcmp(direction, "forward") != 0))
@@ -2256,10 +2261,11 @@ static void GroundStation_HandleCommand(char *command, GroundStationStatus *stat
   {
     if ((channel < 1U) || (channel > 2U) ||
         (value < 1000U) || (value > 2000U) ||
-        (duration_ms < 50UL) || (duration_ms > 3000UL))
+        (duration_ms < FLIGHT_ACTUATOR_MIN_DURATION_MS) ||
+        (duration_ms > FLIGHT_ACTUATOR_MAX_DURATION_MS))
     {
       GroundStation_Send(
-          "GS command rejected reason=range channel=1..2 pulse_us=1000..2000 duration_ms=50..3000\r\n");
+          "GS command rejected reason=range channel=1..2 pulse_us=1000..2000 duration_ms=50..30000\r\n");
     }
     else
     {

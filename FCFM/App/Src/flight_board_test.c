@@ -27,7 +27,6 @@
 #define ADC_VBAT_DIVIDER_MULTIPLIER 3UL
 #define COMMAND_BUFFER_SIZE         128U
 #define USB_RX_QUEUE_SIZE           256U
-#define OUTPUT_ARM_TIMEOUT_MS       60000U
 #define RADIO_TX_ARM_TIMEOUT_MS     60000U
 #define RADIO_POWER_SAMPLE_MS       100U
 #define RADIO_POWER_ENABLE_VBAT_MV  5500UL
@@ -51,7 +50,7 @@
 #define MISSION_FAULT_LINK            (1U << 5)
 #define MISSION_FAULT_LOG             (1U << 6)
 #define ACTUATOR_MIN_DURATION_MS    50U
-#define ACTUATOR_MAX_DURATION_MS    3000U
+#define ACTUATOR_MAX_DURATION_MS    30000U
 #define MOTOR_TEST_MAX_DUTY_PERCENT 30U
 #define SERVO_MIN_PULSE_US          1000U
 #define SERVO_MAX_PULSE_US          2000U
@@ -117,7 +116,7 @@
 #define GNSS_MIN_DURATION_MS        100U
 #define GNSS_MAX_DURATION_MS        3000U
 #define BOARD_HARDWARE_VERSION      "V1.0.2"
-#define BOARD_FIRMWARE_VERSION      "V1.0.2.9"
+#define BOARD_FIRMWARE_VERSION      "V1.0.2.10"
 #define ICM42688_DEVICE_CONFIG_REGISTER 0x11U
 #define ICM42688_ACCEL_DATA_X1_REGISTER 0x1FU
 #define ICM42688_PWR_MGMT0_REGISTER     0x4EU
@@ -278,7 +277,6 @@ _Static_assert(sizeof(FlightBoardLogRecord) <= 64U,
                "FlightBoardLogRecord must remain queue friendly");
 
 static bool outputs_armed;
-static uint32_t outputs_arm_deadline;
 static BoardActionState active_action;
 static BalloonSystemMode system_mode = BALLOON_SYSTEM_MODE_MAINTENANCE;
 static uint32_t mission_last_ground_tick;
@@ -1053,32 +1051,6 @@ static void FlightBoardTest_SetActiveAction(BoardActionType type,
 
 static void FlightBoardTest_ServiceSafety(void)
 {
-  if (outputs_armed && FlightBoardTest_DeadlineExpired(outputs_arm_deadline))
-  {
-    outputs_armed = false;
-    if (active_action.type != BOARD_ACTION_NONE)
-    {
-      BoardActionState stopped = active_action;
-      FlightBoardRemoteAction stopped_remote = remote_action;
-      FlightBoardTest_StopActuators();
-      remote_action.active = false;
-      if (stopped_remote.active)
-      {
-        FlightBoardTest_SetPendingAckForAction(
-            stopped_remote.sequence,
-            stopped_remote.command,
-            BALLOON_ACK_STOPPED,
-            BALLOON_REJECT_OUTPUTS_DISARMED,
-            &stopped);
-      }
-      FlightBoardTest_Send(
-          "FC output auto_stop action=%s channel=%u reason=arm_timeout\r\n",
-          FlightBoardTest_ActionName(stopped.type),
-          (unsigned int)stopped.channel);
-    }
-    return;
-  }
-
   if ((active_action.type != BOARD_ACTION_NONE) &&
       FlightBoardTest_DeadlineExpired(active_action.deadline))
   {
@@ -1149,9 +1121,6 @@ static bool FlightBoardTest_CheckActionReady(uint32_t duration_ms,
 static void FlightBoardTest_SendOutputState(void)
 {
   const char *direction = "n/a";
-  uint32_t arm_remaining = outputs_armed
-                               ? FlightBoardTest_RemainingMs(outputs_arm_deadline)
-                               : 0U;
   uint32_t action_remaining =
       FlightBoardTest_RemainingMs(active_action.deadline);
 
@@ -1162,10 +1131,9 @@ static void FlightBoardTest_SendOutputState(void)
   }
 
   FlightBoardTest_Send(
-      "FC outputs armed=%u arm_remaining_ms=%lu action=%s channel=%u "
+      "FC outputs armed=%u arm_timeout=disabled action=%s channel=%u "
       "value=%lu direction=%s remaining_ms=%lu radio=%s\r\n",
       outputs_armed ? 1U : 0U,
-      (unsigned long)arm_remaining,
       FlightBoardTest_ActionName(active_action.type),
       (unsigned int)active_action.channel,
       (unsigned long)active_action.value,
@@ -3876,7 +3844,6 @@ static void FlightBoardTest_HandleMissionCommand(const BalloonRadioFrame *frame)
 
     FlightBoardTest_StopActuators();
     outputs_armed = false;
-    outputs_arm_deadline = 0U;
     remote_action.active = false;
     FlightBoardTest_SetPendingAckForAction(frame->sequence,
                                            command.code,
@@ -3992,7 +3959,6 @@ static void FlightBoardTest_ServiceMission(void)
   {
     FlightBoardTest_StopActuators();
     outputs_armed = false;
-    outputs_arm_deadline = 0U;
     remote_action.active = false;
     system_mode = BALLOON_SYSTEM_MODE_FAILSAFE;
     mission_telemetry_due = true;
@@ -4084,7 +4050,6 @@ static void FlightBoardTest_StartMission(void)
   }
 
   outputs_armed = false;
-  outputs_arm_deadline = 0U;
   FlightBoardTest_StopActuators();
   radio_bus_forced_off = false;
   radio_power_sampled = false;
@@ -4136,7 +4101,6 @@ static void FlightBoardTest_StopMission(void)
 {
   FlightBoardTest_StopActuators();
   outputs_armed = false;
-  outputs_arm_deadline = 0U;
   system_mode = BALLOON_SYSTEM_MODE_STANDBY;
   mission_pending_ack.valid = false;
   mission_telemetry_due = false;
@@ -4166,7 +4130,6 @@ static void FlightBoardTest_RunAllStatusTests(void)
     FlightBoardTest_StopMissionLogging();
   }
   outputs_armed = false;
-  outputs_arm_deadline = 0U;
   system_mode = BALLOON_SYSTEM_MODE_MAINTENANCE;
   mission_pending_ack.valid = false;
   mission_telemetry_due = false;
@@ -4292,13 +4255,13 @@ static void FlightBoardTest_HandleCommand(char *command)
     FlightBoardTest_Send(
         "FC commands: version | status | test | mission start antenna | mission stop\r\n");
     FlightBoardTest_Send(
-        "FC actuator: actuator arm | actuator status | actuator stop\r\n");
+        "FC actuator: actuator arm | actuator status | actuator stop | actuator disarm\r\n");
     FlightBoardTest_Send(
         "FC actuator: actuator valve <1|2> <ms> | actuator pump <1|2> <fwd|rev> <ms>\r\n");
     FlightBoardTest_Send(
         "FC actuator: actuator motor <1|2> <fwd|rev> <duty1..30> <ms>\r\n");
     FlightBoardTest_Send(
-        "FC actuator: actuator servo <1|2> <pulse1000..2000us> <ms>; duration=50..3000ms\r\n");
+        "FC actuator: actuator servo <1|2> <pulse1000..2000us> <ms>; duration=50..30000ms\r\n");
     FlightBoardTest_Send(
         "FC sensors: i2c | i2call | i2c mux <0..7> | i2c diag <0..7> | baro <0..7> | baro all | sht40 | sensors all\r\n");
   }
@@ -4331,18 +4294,17 @@ static void FlightBoardTest_HandleCommand(char *command)
     else
     {
       outputs_armed = true;
-      outputs_arm_deadline = HAL_GetTick() + OUTPUT_ARM_TIMEOUT_MS;
-      FlightBoardTest_Send("FC outputs armed=1 expires_ms=%u\r\n",
-                          (unsigned int)OUTPUT_ARM_TIMEOUT_MS);
+      FlightBoardTest_Send(
+          "FC outputs armed=1 timeout=disabled lock=actuator_stop_or_disarm\r\n");
     }
   }
   else if ((strcmp(command, "stop") == 0) ||
            (strcmp(command, "disarm") == 0) ||
-           (strcmp(command, "actuator stop") == 0))
+           (strcmp(command, "actuator stop") == 0) ||
+           (strcmp(command, "actuator disarm") == 0))
   {
     FlightBoardTest_StopActuators();
     outputs_armed = false;
-    outputs_arm_deadline = 0U;
     remote_action.active = false;
     FlightBoardTest_Send("FC outputs armed=0 action=none result=safe\r\n");
   }
@@ -4397,7 +4359,6 @@ static void FlightBoardTest_HandleCommand(char *command)
     radio_bus_forced_off = true;
     FlightBoardTest_StopActuators();
     outputs_armed = false;
-    outputs_arm_deadline = 0U;
     system_mode = BALLOON_SYSTEM_MODE_STANDBY;
     remote_action.active = false;
     FlightBoardTest_EnforceRadioLockdown();
@@ -4741,7 +4702,6 @@ void FlightBoardTest_Run(void)
   system_mode = BALLOON_SYSTEM_MODE_MAINTENANCE;
   FlightBoardTest_EnforceAllSafety();
   outputs_armed = false;
-  outputs_arm_deadline = 0U;
 
   for (;;)
   {
