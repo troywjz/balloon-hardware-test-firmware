@@ -20,8 +20,8 @@ endif()
 
 # Set the project name
 set(CMAKE_PROJECT_NAME FCFM)
-set(FCFM_HARDWARE_VERSION V1.0.2)
-set(FCFM_FIRMWARE_VERSION V1.0.2.10)
+set(FCFM_HARDWARE_VERSION V1.0.5)
+set(FCFM_FIRMWARE_VERSION V1.0.5.1)
 set(FCFM_BOARD_TEST_IMAGE ${CMAKE_PROJECT_NAME}_BOARD_TEST_${FCFM_FIRMWARE_VERSION})
 set(BALLOON_COMMON_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../common)
 
@@ -49,6 +49,9 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/Src/flight_board_test.c
+    App/Src/icm45686.c
+    App/Src/mmc5983ma.c
+    App/Src/tca9548a.c
     ${BALLOON_COMMON_DIR}/Src/e28_sx1281.c
     ${BALLOON_COMMON_DIR}/Src/balloon_radio_protocol.c
     ${BALLOON_COMMON_DIR}/Src/balloon_csv_logger.c

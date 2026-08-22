@@ -6,11 +6,15 @@
 #include "balloon_radio_protocol.h"
 #include "cmsis_os.h"
 #include "e28_sx1281.h"
+#include "fc_board_config.h"
 #include "fatfs.h"
 #include "i2c.h"
+#include "icm45686.h"
 #include "main.h"
+#include "mmc5983ma.h"
 #include "queue.h"
 #include "spi.h"
+#include "tca9548a.h"
 #include "task.h"
 #include "tim.h"
 #include "usart.h"
@@ -39,6 +43,20 @@
 #define MISSION_LOG_RESERVED_SLOTS   8U
 #define MISSION_LOG_TASK_STACK_WORDS 768U
 #define MISSION_HEARTBEAT_TIMEOUT_MS 6000U
+#define SENSOR_SAMPLE_PERIOD_MS       100U
+#define SENSOR_RETRY_PERIOD_MS        1000U
+#define IMU_STREAM_PERIOD_MS          100U
+#define IMU_STREAM_ID_REFRESH_SAMPLES 10U
+#define IMU_DIAG_WHO_45686_REGISTER   0x72U
+#define IMU_DIAG_WHO_42688_REGISTER   0x75U
+#define IMU_DIAG_WHO_42688_EXPECTED   0x47U
+#define IMU_DIAG_42688_BANK_REGISTER  0x76U
+#define IMU_DIAG_42688_GYRO_CONFIG    0x4FU
+#define IMU_DIAG_42688_ACCEL_CONFIG   0x50U
+#define IMU_DIAG_42688_POWER_CONFIG   0x4EU
+#define IMU_DIAG_42688_DATA_REGISTER  0x1FU
+#define IMU_DIAG_42688_DEFAULT_CONFIG 0x06U
+#define IMU_DIAG_42688_POWER_LOW_NOISE 0x0FU
 #define MISSION_COMMAND_TTL_MIN_MS   100U
 #define MISSION_COMMAND_TTL_MAX_MS   5000U
 #define MISSION_CLOCK_FUTURE_TOLERANCE_MS 250
@@ -49,6 +67,11 @@
 #define MISSION_FAULT_RADIO           (1U << 4)
 #define MISSION_FAULT_LINK            (1U << 5)
 #define MISSION_FAULT_LOG             (1U << 6)
+#define MISSION_FAULT_MAG_ONBOARD     (1U << 7)
+#define MISSION_FAULT_MAG_EXTERNAL    (1U << 8)
+#define SENSOR_VALID_IMU              (1U << 0)
+#define SENSOR_VALID_MAG_ONBOARD      (1U << 1)
+#define SENSOR_VALID_MAG_EXTERNAL     (1U << 2)
 #define ACTUATOR_MIN_DURATION_MS    50U
 #define ACTUATOR_MAX_DURATION_MS    30000U
 #define MOTOR_TEST_MAX_DUTY_PERCENT 30U
@@ -115,22 +138,8 @@
 #define GNSS_CAPTURE_SIZE           160U
 #define GNSS_MIN_DURATION_MS        100U
 #define GNSS_MAX_DURATION_MS        3000U
-#define BOARD_HARDWARE_VERSION      "V1.0.2"
-#define BOARD_FIRMWARE_VERSION      "V1.0.2.10"
-#define ICM42688_DEVICE_CONFIG_REGISTER 0x11U
-#define ICM42688_ACCEL_DATA_X1_REGISTER 0x1FU
-#define ICM42688_PWR_MGMT0_REGISTER     0x4EU
-#define ICM42688_GYRO_CONFIG0_REGISTER  0x4FU
-#define ICM42688_ACCEL_CONFIG0_REGISTER 0x50U
-#define ICM42688_WHO_AM_I_REGISTER  0x75U
-#define ICM42688_WHO_AM_I_EXPECTED  0x47U
-#define ICM42688_REG_BANK_SEL_REGISTER  0x76U
-#define ICM42688_BANK0                  0x00U
-#define ICM42688_ODR_1KHZ_DEFAULT_FS    0x06U
-#define ICM42688_SIX_AXIS_LOW_NOISE     0x0FU
-#define ICM42688_RAW_DATA_LENGTH        12U
-#define ICM42688_SPI_TRANSFER_MAX       16U
-#define SPI_READ_BIT                0x80U
+#define BOARD_HARDWARE_VERSION      FC_BOARD_HARDWARE_VERSION
+#define BOARD_FIRMWARE_VERSION      FC_FIRMWARE_VERSION
 #define SD_TEST_FILE_PATH           "FC_SD.TMP"
 #define SD_TEST_BUFFER_SIZE         128U
 
@@ -194,7 +203,26 @@ static volatile uint16_t usb_rx_head;
 static volatile uint16_t usb_rx_tail;
 static uint8_t usb_rx_queue[USB_RX_QUEUE_SIZE];
 static char usb_tx_buffer[384];
-static bool imu_configured;
+static Icm45686 imu;
+static Tca9548a i2c_mux;
+static Mmc5983ma mag_onboard;
+static Mmc5983ma mag_external;
+static Icm45686Sample latest_imu_sample;
+static Mmc5983maSample latest_mag_onboard_sample;
+static Mmc5983maSample latest_mag_external_sample;
+static uint8_t latest_imu_who_am_i;
+static uint32_t sensor_next_sample_tick;
+static uint32_t imu_next_retry_tick;
+static bool imu_stream_enabled;
+static uint32_t imu_stream_next_tick;
+static uint32_t imu_stream_sequence;
+static uint8_t imu_stream_id_45686;
+static uint8_t imu_stream_id_42688;
+static uint8_t imu_stream_previous_raw[ICM45686_RAW_DATA_LENGTH];
+static bool imu_stream_has_previous;
+static bool imu_stream_uses_legacy_42688_map;
+static uint32_t mag_onboard_next_retry_tick;
+static uint32_t mag_external_next_retry_tick;
 static E28Sx1281 radio;
 static bool radio_attached;
 static bool radio_tx_armed;
@@ -273,8 +301,10 @@ typedef struct
   } payload;
 } FlightBoardLogRecord;
 
-_Static_assert(sizeof(FlightBoardLogRecord) <= 64U,
+_Static_assert(sizeof(FlightBoardLogRecord) <= 72U,
                "FlightBoardLogRecord must remain queue friendly");
+_Static_assert(FC_RADIO_DIO3_AVAILABLE == 0U,
+               "V1.0.5 must never use grounded E28 DIO3");
 
 static bool outputs_armed;
 static BoardActionState active_action;
@@ -317,6 +347,9 @@ extern volatile uint32_t g_sd_clk_level;
 
 static void FlightBoardTest_SendImuDetails(uint8_t who_am_i,
                                            HAL_StatusTypeDef who_result);
+static void FlightBoardTest_StartImuStream(void);
+static void FlightBoardTest_StopImuStream(void);
+static void FlightBoardTest_ServiceImuStream(void);
 static void FlightBoardTest_Send(const char *format, ...);
 static HAL_StatusTypeDef FlightBoardTest_ReadAdc(uint32_t *raw,
                                                  uint32_t *pin_mv);
@@ -1375,267 +1408,95 @@ static HAL_StatusTypeDef FlightBoardTest_ReadAdc(uint32_t *raw, uint32_t *pin_mv
   return result;
 }
 
-static HAL_StatusTypeDef FlightBoardTest_ImuReadRegistersDuplex(
-    uint8_t register_address,
-    uint8_t *data,
-    uint16_t length)
-{
-  uint8_t tx_data[ICM42688_SPI_TRANSFER_MAX] = {0U};
-  uint8_t rx_data[ICM42688_SPI_TRANSFER_MAX] = {0U};
-  HAL_StatusTypeDef result;
-
-  if ((data == NULL) || (length == 0U) ||
-      ((uint32_t)length + 1U > ICM42688_SPI_TRANSFER_MAX))
-  {
-    return HAL_ERROR;
-  }
-
-  tx_data[0] = register_address | SPI_READ_BIT;
-  HAL_GPIO_WritePin(SPI1_CS_IMU_GPIO_Port, SPI1_CS_IMU_Pin, GPIO_PIN_RESET);
-  result = HAL_SPI_TransmitReceive(
-      &hspi1, tx_data, rx_data, (uint16_t)(length + 1U), 100U);
-  HAL_GPIO_WritePin(SPI1_CS_IMU_GPIO_Port, SPI1_CS_IMU_Pin, GPIO_PIN_SET);
-
-  if (result == HAL_OK)
-  {
-    memcpy(data, &rx_data[1], length);
-  }
-  return result;
-}
-
-/* This split transaction matches the ICM42688 driver used by the proven
- * RoEx_FC board: keep CS low, send the register address, then clock data in. */
-static HAL_StatusTypeDef FlightBoardTest_ImuReadRegistersSplit(
-    uint8_t register_address,
-    uint8_t *data,
-    uint16_t length)
-{
-  uint8_t command = register_address | SPI_READ_BIT;
-  HAL_StatusTypeDef result;
-
-  if ((data == NULL) || (length == 0U))
-  {
-    return HAL_ERROR;
-  }
-
-  HAL_GPIO_WritePin(SPI1_CS_IMU_GPIO_Port, SPI1_CS_IMU_Pin, GPIO_PIN_RESET);
-  result = HAL_SPI_Transmit(&hspi1, &command, 1U, 100U);
-  if (result == HAL_OK)
-  {
-    result = HAL_SPI_Receive(&hspi1, data, length, 100U);
-  }
-  HAL_GPIO_WritePin(SPI1_CS_IMU_GPIO_Port, SPI1_CS_IMU_Pin, GPIO_PIN_SET);
-  return result;
-}
-
-static HAL_StatusTypeDef FlightBoardTest_ImuReadRegisters(uint8_t register_address,
-                                                         uint8_t *data,
-                                                         uint16_t length)
-{
-  return FlightBoardTest_ImuReadRegistersSplit(register_address, data, length);
-}
-
-static HAL_StatusTypeDef FlightBoardTest_ImuReadRegister(uint8_t register_address,
-                                                        uint8_t *value)
-{
-  return FlightBoardTest_ImuReadRegisters(register_address, value, 1U);
-}
-
-static HAL_StatusTypeDef FlightBoardTest_ImuWriteRegister(uint8_t register_address,
-                                                         uint8_t value)
-{
-  uint8_t tx_data[2] = {(uint8_t)(register_address & (uint8_t)~SPI_READ_BIT), value};
-  HAL_StatusTypeDef result;
-
-  HAL_GPIO_WritePin(SPI1_CS_IMU_GPIO_Port, SPI1_CS_IMU_Pin, GPIO_PIN_RESET);
-  result = HAL_SPI_Transmit(&hspi1, tx_data, sizeof(tx_data), 100U);
-  HAL_GPIO_WritePin(SPI1_CS_IMU_GPIO_Port, SPI1_CS_IMU_Pin, GPIO_PIN_SET);
-  return result;
-}
-
 static HAL_StatusTypeDef FlightBoardTest_ReadImuWhoAmI(uint8_t *who_am_i)
 {
-  if (who_am_i == NULL)
-  {
-    return HAL_ERROR;
-  }
-  return FlightBoardTest_ImuReadRegister(ICM42688_WHO_AM_I_REGISTER, who_am_i);
-}
-
-static int16_t FlightBoardTest_DecodeBigEndianInt16(const uint8_t *data)
-{
-  return (int16_t)(((uint16_t)data[0] << 8U) | (uint16_t)data[1]);
-}
-
-static HAL_StatusTypeDef FlightBoardTest_ConfigureImu(void)
-{
-  HAL_StatusTypeDef result;
-
-  result = FlightBoardTest_ImuWriteRegister(ICM42688_REG_BANK_SEL_REGISTER,
-                                            ICM42688_BANK0);
-  if (result == HAL_OK)
-  {
-    result = FlightBoardTest_ImuWriteRegister(ICM42688_GYRO_CONFIG0_REGISTER,
-                                              ICM42688_ODR_1KHZ_DEFAULT_FS);
-  }
-  if (result == HAL_OK)
-  {
-    result = FlightBoardTest_ImuWriteRegister(ICM42688_ACCEL_CONFIG0_REGISTER,
-                                              ICM42688_ODR_1KHZ_DEFAULT_FS);
-  }
-  if (result == HAL_OK)
-  {
-    result = FlightBoardTest_ImuWriteRegister(ICM42688_PWR_MGMT0_REGISTER,
-                                              ICM42688_SIX_AXIS_LOW_NOISE);
-  }
-  if (result == HAL_OK)
-  {
-    osDelay(50U);
-  }
-  return result;
+  return Icm45686_ReadWhoAmI(&imu, who_am_i);
 }
 
 static void FlightBoardTest_ResetAndProbeImu(void)
 {
   uint8_t who_am_i = 0U;
   HAL_StatusTypeDef reset_result;
-  HAL_StatusTypeDef bank_result = HAL_ERROR;
   HAL_StatusTypeDef who_result = HAL_ERROR;
+  HAL_StatusTypeDef init_result = HAL_ERROR;
 
-  imu_configured = false;
-  reset_result = FlightBoardTest_ImuWriteRegister(
-      ICM42688_DEVICE_CONFIG_REGISTER, 0x01U);
+  reset_result = Icm45686_SoftReset(&imu);
   if (reset_result == HAL_OK)
-  {
-    osDelay(10U);
-    bank_result = FlightBoardTest_ImuWriteRegister(
-        ICM42688_REG_BANK_SEL_REGISTER, ICM42688_BANK0);
-  }
-  if (bank_result == HAL_OK)
   {
     who_result = FlightBoardTest_ReadImuWhoAmI(&who_am_i);
   }
+  if ((who_result == HAL_OK) &&
+      (who_am_i == ICM45686_WHO_AM_I_EXPECTED))
+  {
+    init_result = Icm45686_Initialize(&imu);
+  }
 
   FlightBoardTest_Send(
-      "FC imu legacy_reset reset_hal=%u bank_hal=%u who=0x%02X expected=0x%02X read_hal=%u\r\n",
+      "FC imu reset model=ICM-45686 reset_hal=%u who=0x%02X expected=0x%02X read_hal=%u init_hal=%u result=%s\r\n",
       (unsigned int)reset_result,
-      (unsigned int)bank_result,
       who_am_i,
-      ICM42688_WHO_AM_I_EXPECTED,
-      (unsigned int)who_result);
+      ICM45686_WHO_AM_I_EXPECTED,
+      (unsigned int)who_result,
+      (unsigned int)init_result,
+      init_result == HAL_OK ? "PASS" : "FAIL");
   FlightBoardTest_SendImuDetails(who_am_i, who_result);
 }
 
 static void FlightBoardTest_CompareImuTransactions(void)
 {
-  uint8_t duplex_who = 0U;
-  uint8_t split_who = 0U;
-  HAL_StatusTypeDef duplex_result = FlightBoardTest_ImuReadRegistersDuplex(
-      ICM42688_WHO_AM_I_REGISTER, &duplex_who, 1U);
-  HAL_StatusTypeDef split_result = FlightBoardTest_ImuReadRegistersSplit(
-      ICM42688_WHO_AM_I_REGISTER, &split_who, 1U);
+  uint8_t who_am_i = 0U;
+  HAL_StatusTypeDef result = FlightBoardTest_ReadImuWhoAmI(&who_am_i);
 
   FlightBoardTest_Send(
-      "FC imu compare duplex=0x%02X(%u) split=0x%02X(%u) expected=0x%02X\r\n",
-      duplex_who,
-      (unsigned int)duplex_result,
-      split_who,
-      (unsigned int)split_result,
-      ICM42688_WHO_AM_I_EXPECTED);
-  FlightBoardTest_SendImuDetails(split_who, split_result);
-}
-
-static void FlightBoardTest_SendImuProbe(uint8_t who_am_i,
-                                        HAL_StatusTypeDef who_result)
-{
-  uint8_t device_config = 0U;
-  uint8_t sensor_config[3] = {0U, 0U, 0U};
-  uint8_t bank_select = 0U;
-  HAL_StatusTypeDef device_result = FlightBoardTest_ImuReadRegister(
-      ICM42688_DEVICE_CONFIG_REGISTER, &device_config);
-  HAL_StatusTypeDef config_result = FlightBoardTest_ImuReadRegisters(
-      ICM42688_PWR_MGMT0_REGISTER, sensor_config, sizeof(sensor_config));
-  HAL_StatusTypeDef bank_result = FlightBoardTest_ImuReadRegister(
-      ICM42688_REG_BANK_SEL_REGISTER, &bank_select);
-  const char *branch;
-
-  if ((who_result != HAL_OK) || (device_result != HAL_OK) ||
-      (config_result != HAL_OK) || (bank_result != HAL_OK))
-  {
-    branch = "spi_hal_error";
-  }
-  else if ((device_config == 0x00U) && (sensor_config[0] == 0x00U) &&
-           (sensor_config[1] == 0x00U) && (sensor_config[2] == 0x00U) &&
-           (who_am_i == 0x00U) && (bank_select == 0x00U))
-  {
-    branch = "all_zero_miso_low_or_no_response";
-  }
-  else if ((device_config == 0xFFU) && (sensor_config[0] == 0xFFU) &&
-           (sensor_config[1] == 0xFFU) && (sensor_config[2] == 0xFFU) &&
-           (who_am_i == 0xFFU) && (bank_select == 0xFFU))
-  {
-    branch = "all_ff_miso_high_or_open";
-  }
-  else
-  {
-    branch = "register_values_present_unexpected_id";
-  }
-
-  FlightBoardTest_Send(
-      "FC imu probe branch=%s reg11=%02X reg4E=%02X reg4F=%02X "
-      "reg50=%02X reg75=%02X reg76=%02X hal=%u/%u/%u/%u\r\n",
-      branch,
-      device_config,
-      sensor_config[0],
-      sensor_config[1],
-      sensor_config[2],
+      "FC imu probe model=ICM-45686 who=0x%02X expected=0x%02X hal=%u result=%s\r\n",
       who_am_i,
-      bank_select,
-      (unsigned int)device_result,
-      (unsigned int)config_result,
-      (unsigned int)who_result,
-      (unsigned int)bank_result);
+      ICM45686_WHO_AM_I_EXPECTED,
+      (unsigned int)result,
+      (result == HAL_OK) && (who_am_i == ICM45686_WHO_AM_I_EXPECTED)
+          ? "PASS"
+          : "FAIL");
+  FlightBoardTest_SendImuDetails(who_am_i, result);
 }
 
 static void FlightBoardTest_SendImuDetails(uint8_t who_am_i,
-                                          HAL_StatusTypeDef who_result)
+                                           HAL_StatusTypeDef who_result)
 {
-  uint8_t raw_data[ICM42688_RAW_DATA_LENGTH] = {0U};
+  Icm45686Sample sample = {0};
   HAL_StatusTypeDef result;
 
-  if ((who_result != HAL_OK) || (who_am_i != ICM42688_WHO_AM_I_EXPECTED))
+  if ((who_result != HAL_OK) || (who_am_i != ICM45686_WHO_AM_I_EXPECTED))
   {
-    imu_configured = false;
-    FlightBoardTest_SendImuProbe(who_am_i, who_result);
+    imu.configured = false;
+    FlightBoardTest_Send(
+        "FC imu unavailable model=ICM-45686 who=0x%02X hal=%u result=FAIL\r\n",
+        who_am_i,
+        (unsigned int)who_result);
     return;
   }
 
-  if (!imu_configured)
+  if (!imu.configured)
   {
-    result = FlightBoardTest_ConfigureImu();
+    result = Icm45686_Initialize(&imu);
     FlightBoardTest_Send(
-        "FC imu branch=id_ok init bank=0 gyro_cfg=06 accel_cfg=06 pwr=0F hal=%u\r\n",
+        "FC imu init model=ICM-45686 accel=16g/100Hz gyro=2000dps/100Hz pwr=low_noise hal=%u\r\n",
         (unsigned int)result);
     if (result != HAL_OK)
     {
       return;
     }
-    imu_configured = true;
   }
 
-  result = FlightBoardTest_ImuReadRegisters(ICM42688_ACCEL_DATA_X1_REGISTER,
-                                            raw_data,
-                                            sizeof(raw_data));
+  result = Icm45686_ReadSample(&imu, &sample);
   if (result == HAL_OK)
   {
     FlightBoardTest_Send(
-        "FC imu raw ax=%d ay=%d az=%d gx=%d gy=%d gz=%d hal=%u\r\n",
-        (int)FlightBoardTest_DecodeBigEndianInt16(&raw_data[0]),
-        (int)FlightBoardTest_DecodeBigEndianInt16(&raw_data[2]),
-        (int)FlightBoardTest_DecodeBigEndianInt16(&raw_data[4]),
-        (int)FlightBoardTest_DecodeBigEndianInt16(&raw_data[6]),
-        (int)FlightBoardTest_DecodeBigEndianInt16(&raw_data[8]),
-        (int)FlightBoardTest_DecodeBigEndianInt16(&raw_data[10]),
+        "FC imu raw model=ICM-45686 ax=%d ay=%d az=%d gx=%d gy=%d gz=%d hal=%u result=PASS\r\n",
+        (int)sample.accel[0],
+        (int)sample.accel[1],
+        (int)sample.accel[2],
+        (int)sample.gyro[0],
+        (int)sample.gyro[1],
+        (int)sample.gyro[2],
         (unsigned int)result);
   }
   else
@@ -1643,6 +1504,407 @@ static void FlightBoardTest_SendImuDetails(uint8_t who_am_i,
     FlightBoardTest_Send("FC imu raw read_failed hal=%u\r\n",
                         (unsigned int)result);
   }
+}
+
+static const char *FlightBoardTest_ImuModelHint(uint8_t id_45686,
+                                                uint8_t id_42688)
+{
+  if (id_45686 == ICM45686_WHO_AM_I_EXPECTED)
+  {
+    return "ICM45686";
+  }
+  if (id_42688 == IMU_DIAG_WHO_42688_EXPECTED)
+  {
+    return "ICM42688P";
+  }
+  return "UNKNOWN";
+}
+
+static int16_t FlightBoardTest_DecodeImuInt16(const uint8_t *data)
+{
+  return (int16_t)(((uint16_t)data[0] << 8U) | (uint16_t)data[1]);
+}
+
+static HAL_StatusTypeDef FlightBoardTest_ConfigureLegacy42688ForDiagnostic(
+    uint8_t *accel_config_readback,
+    uint8_t *gyro_config_readback,
+    uint8_t *power_config_readback)
+{
+  HAL_StatusTypeDef result;
+
+  *accel_config_readback = 0U;
+  *gyro_config_readback = 0U;
+  *power_config_readback = 0U;
+  result = Icm45686_WriteRegister(&imu, IMU_DIAG_42688_BANK_REGISTER, 0U);
+  if (result == HAL_OK)
+  {
+    result = Icm45686_WriteRegister(&imu,
+                                    IMU_DIAG_42688_GYRO_CONFIG,
+                                    IMU_DIAG_42688_DEFAULT_CONFIG);
+  }
+  if (result == HAL_OK)
+  {
+    result = Icm45686_WriteRegister(&imu,
+                                    IMU_DIAG_42688_ACCEL_CONFIG,
+                                    IMU_DIAG_42688_DEFAULT_CONFIG);
+  }
+  if (result == HAL_OK)
+  {
+    result = Icm45686_WriteRegister(&imu,
+                                    IMU_DIAG_42688_POWER_CONFIG,
+                                    IMU_DIAG_42688_POWER_LOW_NOISE);
+  }
+  if (result == HAL_OK)
+  {
+    osDelay(50U);
+    result = Icm45686_ReadRegister(&imu,
+                                   IMU_DIAG_42688_ACCEL_CONFIG,
+                                   accel_config_readback);
+  }
+  if (result == HAL_OK)
+  {
+    result = Icm45686_ReadRegister(&imu,
+                                   IMU_DIAG_42688_GYRO_CONFIG,
+                                   gyro_config_readback);
+  }
+  if (result == HAL_OK)
+  {
+    result = Icm45686_ReadRegister(&imu,
+                                   IMU_DIAG_42688_POWER_CONFIG,
+                                   power_config_readback);
+  }
+  if ((result == HAL_OK) &&
+      ((*accel_config_readback != IMU_DIAG_42688_DEFAULT_CONFIG) ||
+       (*gyro_config_readback != IMU_DIAG_42688_DEFAULT_CONFIG) ||
+       (*power_config_readback != IMU_DIAG_42688_POWER_LOW_NOISE)))
+  {
+    result = HAL_ERROR;
+  }
+  return result;
+}
+
+static void FlightBoardTest_StartImuStream(void)
+{
+  uint8_t accel_config = 0U;
+  uint8_t gyro_config = 0U;
+  uint8_t power_config = 0U;
+  HAL_StatusTypeDef id_45686_result;
+  HAL_StatusTypeDef id_42688_result;
+  HAL_StatusTypeDef config_result;
+
+  imu.configured = false;
+  latest_imu_sample.valid = false;
+  id_45686_result = Icm45686_ReadRegister(
+      &imu, IMU_DIAG_WHO_45686_REGISTER, &imu_stream_id_45686);
+  id_42688_result = Icm45686_ReadRegister(
+      &imu, IMU_DIAG_WHO_42688_REGISTER, &imu_stream_id_42688);
+  imu_stream_uses_legacy_42688_map =
+      (imu_stream_id_45686 != ICM45686_WHO_AM_I_EXPECTED) &&
+      (imu_stream_id_42688 == IMU_DIAG_WHO_42688_EXPECTED);
+  if (imu_stream_uses_legacy_42688_map)
+  {
+    config_result = FlightBoardTest_ConfigureLegacy42688ForDiagnostic(
+        &accel_config, &gyro_config, &power_config);
+  }
+  else
+  {
+    config_result = Icm45686_ConfigureForDiagnostic(&imu,
+                                                    &accel_config,
+                                                    &gyro_config,
+                                                    &power_config);
+  }
+  imu_stream_enabled = true;
+  imu_stream_sequence = 0U;
+  imu_stream_next_tick = HAL_GetTick();
+  imu_stream_has_previous = false;
+  memset(imu_stream_previous_raw, 0, sizeof(imu_stream_previous_raw));
+
+  FlightBoardTest_Send(
+      "FC imu stream active=1 period_ms=%u model_hint=%s data_reg=0x%02X "
+      "id72=0x%02X id75=0x%02X id_hal=%u/%u "
+      "cfg_readback=0x%02X/0x%02X/0x%02X cfg_hal=%u "
+      "warning=diagnostic_identity_not_trusted stop=imu_stop\r\n",
+      (unsigned int)IMU_STREAM_PERIOD_MS,
+      FlightBoardTest_ImuModelHint(imu_stream_id_45686,
+                                   imu_stream_id_42688),
+      imu_stream_uses_legacy_42688_map ? IMU_DIAG_42688_DATA_REGISTER : 0U,
+      imu_stream_id_45686,
+      imu_stream_id_42688,
+      (unsigned int)id_45686_result,
+      (unsigned int)id_42688_result,
+      accel_config,
+      gyro_config,
+      power_config,
+      (unsigned int)config_result);
+}
+
+static void FlightBoardTest_StopImuStream(void)
+{
+  uint32_t samples = imu_stream_sequence;
+
+  imu_stream_enabled = false;
+  imu_stream_has_previous = false;
+  imu_stream_uses_legacy_42688_map = false;
+  imu.configured = false;
+  latest_imu_sample.valid = false;
+  imu_next_retry_tick = HAL_GetTick();
+  FlightBoardTest_Send("FC imu stream active=0 samples=%lu result=stopped\r\n",
+                      (unsigned long)samples);
+}
+
+static void FlightBoardTest_ServiceImuStream(void)
+{
+  uint8_t raw_data[ICM45686_RAW_DATA_LENGTH];
+  Icm45686Sample sample = {0};
+  HAL_StatusTypeDef result;
+  uint32_t now;
+  uint8_t changed_bytes = 0U;
+  uint8_t index;
+
+  if (!imu_stream_enabled)
+  {
+    return;
+  }
+  now = HAL_GetTick();
+  if ((int32_t)(now - imu_stream_next_tick) < 0)
+  {
+    return;
+  }
+  imu_stream_next_tick = now + IMU_STREAM_PERIOD_MS;
+  if ((imu_stream_sequence % IMU_STREAM_ID_REFRESH_SAMPLES) == 0U)
+  {
+    (void)Icm45686_ReadRegister(
+        &imu, IMU_DIAG_WHO_45686_REGISTER, &imu_stream_id_45686);
+    (void)Icm45686_ReadRegister(
+        &imu, IMU_DIAG_WHO_42688_REGISTER, &imu_stream_id_42688);
+  }
+
+  if (imu_stream_uses_legacy_42688_map)
+  {
+    result = Icm45686_ReadRegisters(&imu,
+                                    IMU_DIAG_42688_DATA_REGISTER,
+                                    raw_data,
+                                    sizeof(raw_data));
+    if (result == HAL_OK)
+    {
+      sample.accel[0] = FlightBoardTest_DecodeImuInt16(&raw_data[0]);
+      sample.accel[1] = FlightBoardTest_DecodeImuInt16(&raw_data[2]);
+      sample.accel[2] = FlightBoardTest_DecodeImuInt16(&raw_data[4]);
+      sample.gyro[0] = FlightBoardTest_DecodeImuInt16(&raw_data[6]);
+      sample.gyro[1] = FlightBoardTest_DecodeImuInt16(&raw_data[8]);
+      sample.gyro[2] = FlightBoardTest_DecodeImuInt16(&raw_data[10]);
+      sample.valid = true;
+    }
+  }
+  else
+  {
+    result = Icm45686_ReadDiagnosticSample(&imu, &sample, raw_data);
+  }
+  if ((result == HAL_OK) && imu_stream_has_previous)
+  {
+    for (index = 0U; index < ICM45686_RAW_DATA_LENGTH; ++index)
+    {
+      if (raw_data[index] != imu_stream_previous_raw[index])
+      {
+        ++changed_bytes;
+      }
+    }
+  }
+  if (result == HAL_OK)
+  {
+    memcpy(imu_stream_previous_raw, raw_data, sizeof(raw_data));
+    imu_stream_has_previous = true;
+  }
+  ++imu_stream_sequence;
+  FlightBoardTest_Send(
+      "FC imu stream seq=%lu tick=%lu model_hint=%s id72=0x%02X id75=0x%02X "
+      "raw=%02X%02X/%02X%02X/%02X%02X/%02X%02X/%02X%02X/%02X%02X "
+      "ax=%d ay=%d az=%d gx=%d gy=%d gz=%d changed=%u hal=%u result=%s\r\n",
+      (unsigned long)imu_stream_sequence,
+      (unsigned long)now,
+      FlightBoardTest_ImuModelHint(imu_stream_id_45686,
+                                   imu_stream_id_42688),
+      imu_stream_id_45686,
+      imu_stream_id_42688,
+      raw_data[0],
+      raw_data[1],
+      raw_data[2],
+      raw_data[3],
+      raw_data[4],
+      raw_data[5],
+      raw_data[6],
+      raw_data[7],
+      raw_data[8],
+      raw_data[9],
+      raw_data[10],
+      raw_data[11],
+      (int)sample.accel[0],
+      (int)sample.accel[1],
+      (int)sample.accel[2],
+      (int)sample.gyro[0],
+      (int)sample.gyro[1],
+      (int)sample.gyro[2],
+      (unsigned int)changed_bytes,
+      (unsigned int)result,
+      result == HAL_OK ? "TRANSFER_OK" : "READ_FAIL");
+}
+
+static HAL_StatusTypeDef FlightBoardTest_ReadMagSample(
+    Mmc5983ma *device,
+    Mmc5983maSample *sample)
+{
+  HAL_StatusTypeDef result;
+
+  if ((device == NULL) || (sample == NULL))
+  {
+    return HAL_ERROR;
+  }
+  if (!device->initialized)
+  {
+    result = Mmc5983ma_Initialize(device);
+    if (result != HAL_OK)
+    {
+      return result;
+    }
+  }
+  result = Mmc5983ma_ReadSample(device, sample);
+  if (result != HAL_OK)
+  {
+    device->initialized = false;
+  }
+  return result;
+}
+
+static void FlightBoardTest_SendMagDetails(Mmc5983ma *device,
+                                           const char *location)
+{
+  Mmc5983maSample sample = {0};
+  uint8_t product_id = 0U;
+  HAL_StatusTypeDef id_result = Mmc5983ma_ReadProductId(device, &product_id);
+  HAL_StatusTypeDef sample_result = HAL_ERROR;
+
+  if ((id_result == HAL_OK) &&
+      (product_id == MMC5983MA_PRODUCT_ID_EXPECTED))
+  {
+    sample_result = FlightBoardTest_ReadMagSample(device, &sample);
+  }
+  FlightBoardTest_Send(
+      "FC mag location=%s channel=%u model=MMC5983MA id=0x%02X expected=0x%02X "
+      "raw=%ld/%ld/%ld mg=%d/%d/%d hal=%u/%u result=%s\r\n",
+      location,
+      (unsigned int)device->mux_channel,
+      product_id,
+      MMC5983MA_PRODUCT_ID_EXPECTED,
+      (long)sample.raw[0],
+      (long)sample.raw[1],
+      (long)sample.raw[2],
+      (int)sample.milli_gauss[0],
+      (int)sample.milli_gauss[1],
+      (int)sample.milli_gauss[2],
+      (unsigned int)id_result,
+      (unsigned int)sample_result,
+      (sample_result == HAL_OK) && sample.valid ? "PASS" : "FAIL");
+}
+
+static void FlightBoardTest_SendAllMagDetails(void)
+{
+  FlightBoardTest_Send(
+      "FC mag all begin mapping=onboard/ch4:MMC5983MA,external/ch5:MMC5983MA\r\n");
+  FlightBoardTest_SendMagDetails(&mag_onboard, "onboard");
+  FlightBoardTest_SendMagDetails(&mag_external, "external");
+  FlightBoardTest_Send("FC mag all end note=review_individual_results\r\n");
+}
+
+static void FlightBoardTest_ServiceMagSensor(
+    Mmc5983ma *device,
+    Mmc5983maSample *latest_sample,
+    uint32_t *next_retry_tick,
+    uint32_t now)
+{
+  HAL_StatusTypeDef result;
+
+  if ((device == NULL) || (latest_sample == NULL) ||
+      (next_retry_tick == NULL))
+  {
+    return;
+  }
+  if (!device->initialized)
+  {
+    if ((int32_t)(now - *next_retry_tick) < 0)
+    {
+      latest_sample->valid = false;
+      return;
+    }
+    result = Mmc5983ma_Initialize(device);
+    if (result != HAL_OK)
+    {
+      latest_sample->valid = false;
+      *next_retry_tick = now + SENSOR_RETRY_PERIOD_MS;
+      return;
+    }
+  }
+
+  result = Mmc5983ma_ReadSample(device, latest_sample);
+  if (result != HAL_OK)
+  {
+    latest_sample->valid = false;
+    device->initialized = false;
+    *next_retry_tick = now + SENSOR_RETRY_PERIOD_MS;
+  }
+}
+
+static void FlightBoardTest_ServiceSensors(void)
+{
+  uint32_t now = HAL_GetTick();
+  HAL_StatusTypeDef result;
+
+  if ((int32_t)(now - sensor_next_sample_tick) < 0)
+  {
+    return;
+  }
+  sensor_next_sample_tick = now + SENSOR_SAMPLE_PERIOD_MS;
+
+  if (!imu_stream_enabled && !imu.configured)
+  {
+    latest_imu_sample.valid = false;
+    if ((int32_t)(now - imu_next_retry_tick) >= 0)
+    {
+      latest_imu_who_am_i = 0U;
+      result = Icm45686_ReadWhoAmI(&imu, &latest_imu_who_am_i);
+      if ((result == HAL_OK) &&
+          (latest_imu_who_am_i == ICM45686_WHO_AM_I_EXPECTED))
+      {
+        result = Icm45686_Initialize(&imu);
+      }
+      else if (result == HAL_OK)
+      {
+        result = HAL_ERROR;
+      }
+      if (result != HAL_OK)
+      {
+        imu_next_retry_tick = now + SENSOR_RETRY_PERIOD_MS;
+      }
+    }
+  }
+  if (!imu_stream_enabled && imu.configured)
+  {
+    result = Icm45686_ReadSample(&imu, &latest_imu_sample);
+    if (result != HAL_OK)
+    {
+      latest_imu_sample.valid = false;
+      imu.configured = false;
+      imu_next_retry_tick = now + SENSOR_RETRY_PERIOD_MS;
+    }
+  }
+
+  FlightBoardTest_ServiceMagSensor(&mag_onboard,
+                                   &latest_mag_onboard_sample,
+                                   &mag_onboard_next_retry_tick,
+                                   now);
+  FlightBoardTest_ServiceMagSensor(&mag_external,
+                                   &latest_mag_external_sample,
+                                   &mag_external_next_retry_tick,
+                                   now);
 }
 
 static void FlightBoardTest_SendStatus(void)
@@ -1674,7 +1936,7 @@ static void FlightBoardTest_SendStatus(void)
       (unsigned long)(adc_pin_mv * ADC_VBAT_DIVIDER_MULTIPLIER),
       (unsigned int)adc_result,
       imu_who_am_i,
-      ICM42688_WHO_AM_I_EXPECTED,
+      ICM45686_WHO_AM_I_EXPECTED,
       (unsigned int)imu_result,
       HAL_GPIO_ReadPin(SDIO_CD_GPIO_Port, SDIO_CD_Pin) == GPIO_PIN_RESET ? 1U : 0U,
       (unsigned int)mission_log_state,
@@ -2259,21 +2521,7 @@ finish:
 static HAL_StatusTypeDef FlightBoardTest_SelectI2cMuxChannel(uint8_t channel,
                                                              uint8_t *control)
 {
-  uint8_t selection = (uint8_t)(1U << channel);
-  HAL_StatusTypeDef result;
-
-  result = HAL_I2C_Master_Transmit(
-      &hi2c1, TCA9548_ADDRESS_8BIT, &selection, 1U, 50U);
-  if (result == HAL_OK)
-  {
-    result = HAL_I2C_Master_Receive(
-        &hi2c1, TCA9548_ADDRESS_8BIT, control, 1U, 50U);
-  }
-  if ((result == HAL_OK) && (*control != selection))
-  {
-    result = HAL_ERROR;
-  }
-  return result;
+  return Tca9548a_SelectOne(&i2c_mux, channel, control);
 }
 
 static bool FlightBoardTest_ReadBarometer(uint8_t channel,
@@ -2548,9 +2796,9 @@ static void FlightBoardTest_ReadExpectedBarometers(void)
     const char *connector;
     const char *expected_model;
   } expected[] = {
-      {0U, "XH7", "BMP580"},
-      {1U, "XH8", "BMP580"},
-      {2U, "XH9", "BMP580"}};
+      {FC_I2C_MUX_CHANNEL_BARO_1, "XH7", "BMP580"},
+      {FC_I2C_MUX_CHANNEL_BARO_2, "XH8", "BMP580"},
+      {FC_I2C_MUX_CHANNEL_BARO_3, "XH9", "BMP580"}};
   FlightBoardBarometerSample samples[3] = {0};
   bool valid[3] = {false, false, false};
   size_t index;
@@ -2785,9 +3033,11 @@ static void FlightBoardTest_ReadExpectedEnvironmentalSensors(void)
 {
   FlightBoardTest_Send(
       "FC sensors all begin mapping=XH7/ch0:BMP580,XH8/ch1:BMP580,"
-      "XH9/ch2:BMP580,XH10/ch3:SHT40\r\n");
+      "XH9/ch2:BMP580,XH10/ch3:SHT40,onboard/ch4:MMC5983MA,"
+      "external/ch5:MMC5983MA\r\n");
   FlightBoardTest_ReadExpectedBarometers();
-  (void)FlightBoardTest_ReadSht40(3U);
+  (void)FlightBoardTest_ReadSht40(FC_I2C_MUX_CHANNEL_SHT40);
+  FlightBoardTest_SendAllMagDetails();
   FlightBoardTest_Send("FC sensors all end note=review_individual_results\r\n");
 }
 
@@ -3232,9 +3482,7 @@ static void FlightBoardTest_FillTelemetry(BalloonTelemetryPayload *telemetry)
 {
   uint32_t adc_raw = 0U;
   uint32_t adc_pin_mv = 0U;
-  uint8_t imu_who_am_i = 0U;
   HAL_StatusTypeDef adc_result = FlightBoardTest_ReadAdc(&adc_raw, &adc_pin_mv);
-  HAL_StatusTypeDef imu_result = FlightBoardTest_ReadImuWhoAmI(&imu_who_am_i);
   bool sd_present = FlightBoardTest_IsSdPresent();
   bool radio_power = E28Sx1281_IsPowerPresent(&radio);
 
@@ -3245,9 +3493,10 @@ static void FlightBoardTest_FillTelemetry(BalloonTelemetryPayload *telemetry)
   telemetry->battery_mv = FlightBoardTest_SaturateU16(
       adc_pin_mv * ADC_VBAT_DIVIDER_MULTIPLIER);
   telemetry->adc_raw = FlightBoardTest_SaturateU16(adc_raw);
-  telemetry->imu_who_am_i = imu_who_am_i;
-  telemetry->imu_valid = (imu_result == HAL_OK) &&
-                         (imu_who_am_i == ICM42688_WHO_AM_I_EXPECTED);
+  telemetry->imu_who_am_i = latest_imu_who_am_i;
+  telemetry->imu_valid = latest_imu_sample.valid &&
+                         (latest_imu_who_am_i ==
+                          ICM45686_WHO_AM_I_EXPECTED);
   telemetry->sd_present = sd_present;
   telemetry->link_valid = FlightBoardTest_LinkValid();
   telemetry->action = (uint8_t)active_action.type;
@@ -3262,6 +3511,30 @@ static void FlightBoardTest_FillTelemetry(BalloonTelemetryPayload *telemetry)
                               ((active_action.type == BOARD_ACTION_PUMP) ||
                                (active_action.type == BOARD_ACTION_MOTOR));
   telemetry->log_state = mission_log_state;
+  memcpy(telemetry->imu_accel,
+         latest_imu_sample.accel,
+         sizeof(telemetry->imu_accel));
+  memcpy(telemetry->imu_gyro,
+         latest_imu_sample.gyro,
+         sizeof(telemetry->imu_gyro));
+  memcpy(telemetry->mag_onboard_mg,
+         latest_mag_onboard_sample.milli_gauss,
+         sizeof(telemetry->mag_onboard_mg));
+  memcpy(telemetry->mag_external_mg,
+         latest_mag_external_sample.milli_gauss,
+         sizeof(telemetry->mag_external_mg));
+  if (telemetry->imu_valid)
+  {
+    telemetry->sensor_valid_flags |= SENSOR_VALID_IMU;
+  }
+  if (latest_mag_onboard_sample.valid)
+  {
+    telemetry->sensor_valid_flags |= SENSOR_VALID_MAG_ONBOARD;
+  }
+  if (latest_mag_external_sample.valid)
+  {
+    telemetry->sensor_valid_flags |= SENSOR_VALID_MAG_EXTERNAL;
+  }
   telemetry->payload_version = BALLOON_TELEMETRY_PAYLOAD_VERSION;
 
   if (adc_result != HAL_OK)
@@ -3271,6 +3544,14 @@ static void FlightBoardTest_FillTelemetry(BalloonTelemetryPayload *telemetry)
   if (!telemetry->imu_valid)
   {
     telemetry->fault_bits |= MISSION_FAULT_IMU;
+  }
+  if ((telemetry->sensor_valid_flags & SENSOR_VALID_MAG_ONBOARD) == 0U)
+  {
+    telemetry->fault_bits |= MISSION_FAULT_MAG_ONBOARD;
+  }
+  if ((telemetry->sensor_valid_flags & SENSOR_VALID_MAG_EXTERNAL) == 0U)
+  {
+    telemetry->fault_bits |= MISSION_FAULT_MAG_EXTERNAL;
   }
   if (!sd_present)
   {
@@ -3545,7 +3826,7 @@ static void FlightBoardTest_LoggerTask(void *argument)
                 SDPath,
                 "FCD",
                 file_sequence,
-                "schema,record_seq,mission_id,fc_tick_ms,mode,fault_bits,battery_mv,adc_raw,imu_who_am_i,imu_valid,sd_present,link_valid,action,action_channel,direction_requested,direction_applied,action_value,action_remaining_ms,radio_rx_count,radio_tx_count,radio_error_count,log_state\r\n",
+                "schema,record_seq,mission_id,fc_tick_ms,mode,fault_bits,battery_mv,adc_raw,imu_who_am_i,imu_valid,imu_ax_raw,imu_ay_raw,imu_az_raw,imu_gx_raw,imu_gy_raw,imu_gz_raw,mag_onboard_x_mg,mag_onboard_y_mg,mag_onboard_z_mg,mag_external_x_mg,mag_external_y_mg,mag_external_z_mg,sensor_valid_flags,sd_present,link_valid,action,action_channel,direction_requested,direction_applied,action_value,action_remaining_ms,radio_rx_count,radio_tx_count,radio_error_count,log_state\r\n",
                 record.timestamp_ms) &&
             BalloonCsvLogger_OpenAt(
                 &mission_event_log,
@@ -3582,7 +3863,7 @@ static void FlightBoardTest_LoggerTask(void *argument)
       length = snprintf(
           mission_csv_line,
           sizeof(mission_csv_line),
-          "1,%lu,%u,%lu,%s,0x%04X,%u,%u,%u,%u,%u,%u,%u,%u,%s,%s,%u,%u,%u,%u,%u,%u\r\n",
+          "2,%lu,%u,%lu,%s,0x%04X,%u,%u,%u,%u,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,0x%02X,%u,%u,%u,%u,%s,%s,%u,%u,%u,%u,%u,%u\r\n",
           (unsigned long)mission_log_sequence,
           (unsigned int)telemetry->mission_id,
           (unsigned long)telemetry->timestamp_ms,
@@ -3592,6 +3873,19 @@ static void FlightBoardTest_LoggerTask(void *argument)
           (unsigned int)telemetry->adc_raw,
           (unsigned int)telemetry->imu_who_am_i,
           telemetry->imu_valid ? 1U : 0U,
+          (int)telemetry->imu_accel[0],
+          (int)telemetry->imu_accel[1],
+          (int)telemetry->imu_accel[2],
+          (int)telemetry->imu_gyro[0],
+          (int)telemetry->imu_gyro[1],
+          (int)telemetry->imu_gyro[2],
+          (int)telemetry->mag_onboard_mg[0],
+          (int)telemetry->mag_onboard_mg[1],
+          (int)telemetry->mag_onboard_mg[2],
+          (int)telemetry->mag_external_mg[0],
+          (int)telemetry->mag_external_mg[1],
+          (int)telemetry->mag_external_mg[2],
+          (unsigned int)telemetry->sensor_valid_flags,
           telemetry->sd_present ? 1U : 0U,
           telemetry->link_valid ? 1U : 0U,
           (unsigned int)telemetry->action,
@@ -4263,12 +4557,12 @@ static void FlightBoardTest_HandleCommand(char *command)
     FlightBoardTest_Send(
         "FC actuator: actuator servo <1|2> <pulse1000..2000us> <ms>; duration=50..30000ms\r\n");
     FlightBoardTest_Send(
-        "FC sensors: i2c | i2call | i2c mux <0..7> | i2c diag <0..7> | baro <0..7> | baro all | sht40 | sensors all\r\n");
+        "FC sensors: imu | imureset | imu stream | imu stop | mag <onboard|external|all> | i2c | i2call | i2c mux <0..7> | i2c diag <0..7> | baro <0..7> | baro all | sht40 | sensors all\r\n");
   }
   else if (strcmp(command, "version") == 0)
   {
     FlightBoardTest_Send(
-        "FC hardware=%s firmware=%s mode=%s command_payload_v=%u telemetry_payload_v=%u radio_tx=locked_default\r\n",
+        "FC hardware=%s firmware=%s mode=%s command_payload_v=%u telemetry_payload_v=%u radio_tx=locked_default radio_dio3=disabled_grounded\r\n",
         BOARD_HARDWARE_VERSION,
         BOARD_FIRMWARE_VERSION,
         BalloonRadio_SystemModeName(system_mode),
@@ -4341,9 +4635,30 @@ static void FlightBoardTest_HandleCommand(char *command)
   {
     FlightBoardTest_CompareImuTransactions();
   }
+  else if (strcmp(command, "imu stream") == 0)
+  {
+    FlightBoardTest_StartImuStream();
+  }
+  else if (strcmp(command, "imu stop") == 0)
+  {
+    FlightBoardTest_StopImuStream();
+  }
   else if (strcmp(command, "imureset") == 0)
   {
     FlightBoardTest_ResetAndProbeImu();
+  }
+  else if ((strcmp(command, "mag") == 0) ||
+           (strcmp(command, "mag all") == 0))
+  {
+    FlightBoardTest_SendAllMagDetails();
+  }
+  else if (strcmp(command, "mag onboard") == 0)
+  {
+    FlightBoardTest_SendMagDetails(&mag_onboard, "onboard");
+  }
+  else if (strcmp(command, "mag external") == 0)
+  {
+    FlightBoardTest_SendMagDetails(&mag_external, "external");
   }
   else if ((strcmp(command, "radio") == 0) ||
            (strcmp(command, "radio status") == 0))
@@ -4458,7 +4773,7 @@ static void FlightBoardTest_HandleCommand(char *command)
   }
   else if (strcmp(command, "sht40") == 0)
   {
-    (void)FlightBoardTest_ReadSht40(3U);
+    (void)FlightBoardTest_ReadSht40(FC_I2C_MUX_CHANNEL_SHT40);
   }
   else if (strcmp(command, "sensors all") == 0)
   {
@@ -4677,6 +4992,21 @@ void FlightBoardTest_Run(void)
       .callback_context = NULL,
   };
 
+  Icm45686_Construct(&imu,
+                     &hspi1,
+                     SPI1_CS_IMU_GPIO_Port,
+                     SPI1_CS_IMU_Pin);
+  Tca9548a_Construct(&i2c_mux, &hi2c1, TCA9548_ADDRESS_8BIT);
+  Mmc5983ma_Construct(&mag_onboard,
+                      &hi2c1,
+                      &i2c_mux,
+                      FC_I2C_MUX_CHANNEL_MAG_ONBOARD);
+  Mmc5983ma_Construct(&mag_external,
+                      &hi2c1,
+                      &i2c_mux,
+                      FC_I2C_MUX_CHANNEL_MAG_EXTERNAL);
+  (void)Tca9548a_DisableAll(&i2c_mux);
+
   E28Sx1281_Construct(
       &radio, &radio_pins, E28_SX1281_DEFAULT_FREQUENCY_HZ);
   radio_attached = true;
@@ -4711,6 +5041,8 @@ void FlightBoardTest_Run(void)
     {
       FlightBoardTest_ServiceSafety();
       FlightBoardTest_ServiceRadioArm();
+      FlightBoardTest_ServiceSensors();
+      FlightBoardTest_ServiceImuStream();
       FlightBoardTest_ServiceMission();
       FlightBoardTest_ServiceMissionLogging();
     }

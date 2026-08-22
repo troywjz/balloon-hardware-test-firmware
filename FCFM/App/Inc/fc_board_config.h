@@ -1,0 +1,17 @@
+#ifndef FC_BOARD_CONFIG_H
+#define FC_BOARD_CONFIG_H
+
+#define FC_BOARD_HARDWARE_VERSION "V1.0.5"
+#define FC_FIRMWARE_VERSION       "V1.0.5.1"
+
+#define FC_I2C_MUX_CHANNEL_BARO_1       0U
+#define FC_I2C_MUX_CHANNEL_BARO_2       1U
+#define FC_I2C_MUX_CHANNEL_BARO_3       2U
+#define FC_I2C_MUX_CHANNEL_SHT40        3U
+#define FC_I2C_MUX_CHANNEL_MAG_ONBOARD  4U
+#define FC_I2C_MUX_CHANNEL_MAG_EXTERNAL 5U
+
+/* V1.0.5 has E28 DIO3 tied to GND. Never route or sample an IRQ on DIO3. */
+#define FC_RADIO_DIO3_AVAILABLE 0U
+
+#endif
