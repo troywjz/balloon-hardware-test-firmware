@@ -30,7 +30,7 @@
 #define USB_RX_QUEUE_SIZE           256U
 #define RADIO_TX_ARM_TIMEOUT_MS     60000U
 #define GROUND_HARDWARE_VERSION     "V1.1.0"
-#define GROUND_FIRMWARE_VERSION     "V1.1.0.8"
+#define GROUND_FIRMWARE_VERSION     "V1.1.0.9"
 #define FLIGHT_ACTUATOR_MIN_DURATION_MS 50UL
 #define FLIGHT_ACTUATOR_MAX_DURATION_MS 30000UL
 #define MISSION_ID                  1U
@@ -126,7 +126,7 @@ typedef struct
   } payload;
 } GroundStationLogRecord;
 
-_Static_assert(sizeof(GroundStationLogRecord) <= 64U,
+_Static_assert(sizeof(GroundStationLogRecord) <= 72U,
                "GroundStationLogRecord must remain queue friendly");
 
 static volatile uint16_t usb_rx_head;
@@ -562,7 +562,7 @@ static void GroundStation_HandleRadioPacket(const E28Sx1281Packet *packet)
         telemetry.link_valid ? 1U : 0U,
         (unsigned int)telemetry.action,
         (unsigned int)telemetry.action_channel,
-        telemetry.payload_version >= BALLOON_TELEMETRY_PAYLOAD_VERSION
+        telemetry.payload_version >= BALLOON_TELEMETRY_PAYLOAD_VERSION_V2
             ? GroundStation_ActionDirection(telemetry.action,
                                             telemetry.action_reverse)
             : "unknown",
@@ -574,6 +574,26 @@ static void GroundStation_HandleRadioPacket(const E28Sx1281Packet *packet)
         GroundStation_TelemetryLogState(&telemetry),
         packet->rssi_dbm,
         packet->snr_db);
+    if (telemetry.payload_version >= BALLOON_TELEMETRY_PAYLOAD_VERSION)
+    {
+      GroundStation_Send(
+          "GS sensors seq=%u valid=0x%02X imu_raw=%d/%d/%d,%d/%d/%d "
+          "mag_onboard_mg=%d/%d/%d mag_external_mg=%d/%d/%d\r\n",
+          (unsigned int)frame.sequence,
+          (unsigned int)telemetry.sensor_valid_flags,
+          (int)telemetry.imu_accel[0],
+          (int)telemetry.imu_accel[1],
+          (int)telemetry.imu_accel[2],
+          (int)telemetry.imu_gyro[0],
+          (int)telemetry.imu_gyro[1],
+          (int)telemetry.imu_gyro[2],
+          (int)telemetry.mag_onboard_mg[0],
+          (int)telemetry.mag_onboard_mg[1],
+          (int)telemetry.mag_onboard_mg[2],
+          (int)telemetry.mag_external_mg[0],
+          (int)telemetry.mag_external_mg[1],
+          (int)telemetry.mag_external_mg[2]);
+    }
     GroundStation_LogTelemetry(&telemetry,
                                frame.sequence,
                                packet->rssi_dbm,
@@ -843,7 +863,7 @@ static const char *GroundStation_TelemetryLogState(
     const BalloonTelemetryPayload *telemetry)
 {
   if ((telemetry == NULL) ||
-      (telemetry->payload_version < BALLOON_TELEMETRY_PAYLOAD_VERSION))
+      (telemetry->payload_version < BALLOON_TELEMETRY_PAYLOAD_VERSION_V2))
   {
     return "unknown";
   }
@@ -1100,7 +1120,7 @@ static void GroundStation_LoggerTask(void *argument)
                 SDPath,
                 "GSD",
                 file_sequence,
-                "schema,record_seq,gs_tick_ms,frame_seq,telemetry_version,fc_tick_ms,mission_id,mode,fault_bits,battery_mv,adc_raw,imu_who_am_i,imu_valid,sd_present,link_valid,action,action_channel,direction_requested,action_value,action_remaining_ms,fc_radio_rx_count,fc_radio_tx_count,fc_radio_error_count,fc_log_state,rssi_dbm,snr_db\r\n",
+                "schema,record_seq,gs_tick_ms,frame_seq,telemetry_version,fc_tick_ms,mission_id,mode,fault_bits,battery_mv,adc_raw,imu_who_am_i,imu_valid,imu_ax_raw,imu_ay_raw,imu_az_raw,imu_gx_raw,imu_gy_raw,imu_gz_raw,mag_onboard_x_mg,mag_onboard_y_mg,mag_onboard_z_mg,mag_external_x_mg,mag_external_y_mg,mag_external_z_mg,sensor_valid_flags,sd_present,link_valid,action,action_channel,direction_requested,action_value,action_remaining_ms,fc_radio_rx_count,fc_radio_tx_count,fc_radio_error_count,fc_log_state,rssi_dbm,snr_db\r\n",
                 record.timestamp_ms) &&
             BalloonCsvLogger_OpenAt(
                 &mission_event_log,
@@ -1138,7 +1158,7 @@ static void GroundStation_LoggerTask(void *argument)
       length = snprintf(
           mission_csv_line,
           sizeof(mission_csv_line),
-          "1,%lu,%lu,%u,%u,%lu,%u,%s,0x%04X,%u,%u,%u,%u,%u,%u,%u,%u,%s,%u,%u,%u,%u,%u,%s,%d,%d\r\n",
+          "2,%lu,%lu,%u,%u,%lu,%u,%s,0x%04X,%u,%u,%u,%u,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,0x%02X,%u,%u,%u,%u,%s,%u,%u,%u,%u,%u,%s,%d,%d\r\n",
           (unsigned long)mission_data_log_sequence,
           (unsigned long)record.timestamp_ms,
           (unsigned int)data->frame_sequence,
@@ -1151,11 +1171,24 @@ static void GroundStation_LoggerTask(void *argument)
           (unsigned int)telemetry->adc_raw,
           (unsigned int)telemetry->imu_who_am_i,
           telemetry->imu_valid ? 1U : 0U,
+          (int)telemetry->imu_accel[0],
+          (int)telemetry->imu_accel[1],
+          (int)telemetry->imu_accel[2],
+          (int)telemetry->imu_gyro[0],
+          (int)telemetry->imu_gyro[1],
+          (int)telemetry->imu_gyro[2],
+          (int)telemetry->mag_onboard_mg[0],
+          (int)telemetry->mag_onboard_mg[1],
+          (int)telemetry->mag_onboard_mg[2],
+          (int)telemetry->mag_external_mg[0],
+          (int)telemetry->mag_external_mg[1],
+          (int)telemetry->mag_external_mg[2],
+          (unsigned int)telemetry->sensor_valid_flags,
           telemetry->sd_present ? 1U : 0U,
           telemetry->link_valid ? 1U : 0U,
           (unsigned int)telemetry->action,
           (unsigned int)telemetry->action_channel,
-          telemetry->payload_version >= BALLOON_TELEMETRY_PAYLOAD_VERSION
+          telemetry->payload_version >= BALLOON_TELEMETRY_PAYLOAD_VERSION_V2
               ? GroundStation_ActionDirection(telemetry->action,
                                               telemetry->action_reverse)
               : "unknown",
@@ -2133,7 +2166,7 @@ static void GroundStation_HandleCommand(char *command, GroundStationStatus *stat
   else if (strcmp(command, "version") == 0)
   {
     GroundStation_Send(
-        "GS hardware=%s firmware=%s mission=%u command_payload_v=%u telemetry_accept=v1/v2\r\n",
+        "GS hardware=%s firmware=%s mission=%u command_payload_v=%u telemetry_accept=v1/v2/v3\r\n",
                        GROUND_HARDWARE_VERSION,
                        GROUND_FIRMWARE_VERSION,
                        mission_active ? 1U : 0U,

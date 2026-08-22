@@ -47,6 +47,11 @@
 #define SX1281_IRQ_DIO1_MASK     (SX1281_IRQ_TX_DONE | SX1281_IRQ_RX_DONE | \
                                   SX1281_IRQ_HEADER_ERROR | \
                                   SX1281_IRQ_CRC_ERROR | SX1281_IRQ_TIMEOUT)
+#define SX1281_IRQ_DIO2_MASK     0U
+#define SX1281_IRQ_DIO3_MASK     0U
+
+_Static_assert(SX1281_IRQ_DIO3_MASK == 0U,
+               "DIO3 must remain unrouted for boards that ground this pin");
 
 #define SX1281_BUSY_TIMEOUT_MS  50U
 #define SX1281_SPI_TIMEOUT_MS   100U
@@ -521,10 +526,10 @@ static HAL_StatusTypeDef E28Sx1281_SetIrqParameters(E28Sx1281 *radio)
       (uint8_t)SX1281_IRQ_DIO1_MASK,
       (uint8_t)(SX1281_IRQ_DIO1_MASK >> 8U),
       (uint8_t)SX1281_IRQ_DIO1_MASK,
-      0x00U,
-      0x00U,
-      0x00U,
-      0x00U,
+      (uint8_t)(SX1281_IRQ_DIO2_MASK >> 8U),
+      (uint8_t)SX1281_IRQ_DIO2_MASK,
+      (uint8_t)(SX1281_IRQ_DIO3_MASK >> 8U),
+      (uint8_t)SX1281_IRQ_DIO3_MASK,
   };
   return E28Sx1281_CommandWrite(radio, command, sizeof(command), NULL, 0U);
 }

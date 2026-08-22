@@ -13,6 +13,11 @@ static void BalloonRadio_WriteU16(uint8_t *data, uint16_t value)
   data[1] = (uint8_t)(value >> 8U);
 }
 
+static void BalloonRadio_WriteI16(uint8_t *data, int16_t value)
+{
+  BalloonRadio_WriteU16(data, (uint16_t)value);
+}
+
 static void BalloonRadio_WriteU32(uint8_t *data, uint32_t value)
 {
   data[0] = (uint8_t)(value & 0xFFU);
@@ -24,6 +29,11 @@ static void BalloonRadio_WriteU32(uint8_t *data, uint32_t value)
 static uint16_t BalloonRadio_ReadU16(const uint8_t *data)
 {
   return (uint16_t)data[0] | ((uint16_t)data[1] << 8U);
+}
+
+static int16_t BalloonRadio_ReadI16(const uint8_t *data)
+{
+  return (int16_t)BalloonRadio_ReadU16(data);
 }
 
 static uint32_t BalloonRadio_ReadU32(const uint8_t *data)
@@ -268,6 +278,19 @@ bool BalloonRadio_EncodeTelemetryPayload(
   BalloonRadio_WriteU16(&output[28], telemetry->radio_error_count);
   output[30] = telemetry->action_reverse ? 1U : 0U;
   output[31] = telemetry->log_state;
+  BalloonRadio_WriteI16(&output[32], telemetry->imu_accel[0]);
+  BalloonRadio_WriteI16(&output[34], telemetry->imu_accel[1]);
+  BalloonRadio_WriteI16(&output[36], telemetry->imu_accel[2]);
+  BalloonRadio_WriteI16(&output[38], telemetry->imu_gyro[0]);
+  BalloonRadio_WriteI16(&output[40], telemetry->imu_gyro[1]);
+  BalloonRadio_WriteI16(&output[42], telemetry->imu_gyro[2]);
+  BalloonRadio_WriteI16(&output[44], telemetry->mag_onboard_mg[0]);
+  BalloonRadio_WriteI16(&output[46], telemetry->mag_onboard_mg[1]);
+  BalloonRadio_WriteI16(&output[48], telemetry->mag_onboard_mg[2]);
+  BalloonRadio_WriteI16(&output[50], telemetry->mag_external_mg[0]);
+  BalloonRadio_WriteI16(&output[52], telemetry->mag_external_mg[1]);
+  BalloonRadio_WriteI16(&output[54], telemetry->mag_external_mg[2]);
+  output[56] = telemetry->sensor_valid_flags;
   *output_length = BALLOON_TELEMETRY_PAYLOAD_SIZE;
   return true;
 }
@@ -279,12 +302,15 @@ bool BalloonRadio_DecodeTelemetryPayload(const uint8_t *data,
   if ((data == NULL) || (telemetry == NULL) ||
       !(((length == BALLOON_TELEMETRY_PAYLOAD_SIZE_V1) &&
          (data[0] == BALLOON_MISSION_PAYLOAD_VERSION)) ||
+        ((length == BALLOON_TELEMETRY_PAYLOAD_SIZE_V2) &&
+         (data[0] == BALLOON_TELEMETRY_PAYLOAD_VERSION_V2)) ||
         ((length == BALLOON_TELEMETRY_PAYLOAD_SIZE) &&
          (data[0] == BALLOON_TELEMETRY_PAYLOAD_VERSION))))
   {
     return false;
   }
 
+  memset(telemetry, 0, sizeof(*telemetry));
   telemetry->system_mode = (BalloonSystemMode)data[1];
   telemetry->mission_id = BalloonRadio_ReadU16(&data[2]);
   telemetry->fault_bits = BalloonRadio_ReadU16(&data[4]);
@@ -303,7 +329,7 @@ bool BalloonRadio_DecodeTelemetryPayload(const uint8_t *data,
   telemetry->radio_tx_count = BalloonRadio_ReadU16(&data[26]);
   telemetry->radio_error_count = BalloonRadio_ReadU16(&data[28]);
   telemetry->payload_version = data[0];
-  if (length == BALLOON_TELEMETRY_PAYLOAD_SIZE)
+  if (length >= BALLOON_TELEMETRY_PAYLOAD_SIZE_V2)
   {
     telemetry->action_reverse = data[30] != 0U;
     telemetry->log_state = data[31];
@@ -312,6 +338,22 @@ bool BalloonRadio_DecodeTelemetryPayload(const uint8_t *data,
   {
     telemetry->action_reverse = false;
     telemetry->log_state = BALLOON_LOG_STATE_OFF;
+  }
+  if (length == BALLOON_TELEMETRY_PAYLOAD_SIZE)
+  {
+    telemetry->imu_accel[0] = BalloonRadio_ReadI16(&data[32]);
+    telemetry->imu_accel[1] = BalloonRadio_ReadI16(&data[34]);
+    telemetry->imu_accel[2] = BalloonRadio_ReadI16(&data[36]);
+    telemetry->imu_gyro[0] = BalloonRadio_ReadI16(&data[38]);
+    telemetry->imu_gyro[1] = BalloonRadio_ReadI16(&data[40]);
+    telemetry->imu_gyro[2] = BalloonRadio_ReadI16(&data[42]);
+    telemetry->mag_onboard_mg[0] = BalloonRadio_ReadI16(&data[44]);
+    telemetry->mag_onboard_mg[1] = BalloonRadio_ReadI16(&data[46]);
+    telemetry->mag_onboard_mg[2] = BalloonRadio_ReadI16(&data[48]);
+    telemetry->mag_external_mg[0] = BalloonRadio_ReadI16(&data[50]);
+    telemetry->mag_external_mg[1] = BalloonRadio_ReadI16(&data[52]);
+    telemetry->mag_external_mg[2] = BalloonRadio_ReadI16(&data[54]);
+    telemetry->sensor_valid_flags = data[56];
   }
   return true;
 }

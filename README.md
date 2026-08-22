@@ -6,8 +6,8 @@
 
 ## 当前版本
 
-- 飞控硬件：`V1.0.2`；飞控固件：`V1.0.2.10`。
-- 地面站硬件：`V1.1.0`；地面站固件：`V1.1.0.8`。
+- 飞控硬件：`V1.0.5`；飞控固件：`V1.0.5.1`。
+- 地面站硬件：`V1.1.0`；地面站固件：`V1.1.0.9`。
 - MCU（Microcontroller Unit，微控制器）：STM32F405RGT6。
 - 串口：USB CDC（Communications Device Class，通信设备类），115200、8-N-1、CRLF。
 
@@ -24,6 +24,11 @@
 - [Releases](https://github.com/troywjz/balloon-hardware-test-firmware/releases)：版本化烧录文件。
 
 更详细的板级说明见 `FCFM/README.md` 和 `ground-station/README.md`。
+
+飞控 `V1.0.5.1` 增加了 `imu stream` 连续诊断命令。该命令以 10 Hz 输出两个候选
+身份寄存器、原始六轴数据和相邻采样变化数，用于区分 ICM-45686 通信异常、错料和
+焊接问题；使用 `imu stop` 停止。诊断模式不绕过正式功能的器件身份校验，也不驱动
+执行器或启用射频发射。
 
 ## 重要安全规则
 
@@ -43,15 +48,15 @@
 飞控：
 
 ```text
-FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.2.10.hex
-FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.2.10.bin
+FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.5.1.hex
+FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.5.1.bin
 ```
 
 地面站：
 
 ```text
-ground-station/build/Debug/GROUND_STATION_BOARD_TEST_V1.1.0.8.hex
-ground-station/build/Debug/GROUND_STATION_BOARD_TEST_V1.1.0.8.bin
+ground-station/build/Debug/GROUND_STATION_BOARD_TEST_V1.1.0.9.hex
+ground-station/build/Debug/GROUND_STATION_BOARD_TEST_V1.1.0.9.bin
 ```
 
 同一目录保留不带版本号的通用别名。HEX（Intel HEX，英特尔十六进制）适合通过

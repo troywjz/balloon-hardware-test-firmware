@@ -9,11 +9,13 @@
 #define BALLOON_RADIO_MAX_PAYLOAD      64U
 #define BALLOON_RADIO_FRAME_OVERHEAD   10U
 #define BALLOON_MISSION_PAYLOAD_VERSION 1U
-#define BALLOON_TELEMETRY_PAYLOAD_VERSION 2U
+#define BALLOON_TELEMETRY_PAYLOAD_VERSION_V2 2U
+#define BALLOON_TELEMETRY_PAYLOAD_VERSION 3U
 #define BALLOON_TELEMETRY_PAYLOAD_SIZE_V1 30U
+#define BALLOON_TELEMETRY_PAYLOAD_SIZE_V2 32U
 #define BALLOON_COMMAND_PAYLOAD_SIZE    16U
 #define BALLOON_ACK_PAYLOAD_SIZE        12U
-#define BALLOON_TELEMETRY_PAYLOAD_SIZE  32U
+#define BALLOON_TELEMETRY_PAYLOAD_SIZE  57U
 #define BALLOON_RADIO_MAX_FRAME_SIZE   \
   (BALLOON_RADIO_MAX_PAYLOAD + BALLOON_RADIO_FRAME_OVERHEAD)
 
@@ -137,6 +139,11 @@ typedef struct
   uint16_t radio_error_count;
   bool action_reverse;
   uint8_t log_state;
+  int16_t imu_accel[3];
+  int16_t imu_gyro[3];
+  int16_t mag_onboard_mg[3];
+  int16_t mag_external_mg[3];
+  uint8_t sensor_valid_flags;
   uint8_t payload_version;
 } BalloonTelemetryPayload;
 
