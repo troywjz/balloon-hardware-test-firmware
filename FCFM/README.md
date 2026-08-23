@@ -1,7 +1,7 @@
 # FCFM 飞控检测与任务固件
 
 - 飞控硬件版本：`V1.0.5`
-- 飞控固件版本：`V1.0.5.1`
+- 飞控固件版本：`V1.0.5.2`
 - MCU：STM32F405RGT6
 
 固件继续保留 ADC、IMU、I²C/TCA9548、GNSS、SDIO、两个阀、两个泵、两个
@@ -147,6 +147,34 @@ actuator stop
 actuator disarm
 ```
 
+### 分组气囊执行器命令
+
+这些命令通过飞控板的 USB CDC 串口发送，适合在 VSCode 串口监视器中逐条执行。
+分组关系与当前 V1.0.5 原理图一致：组 1 为 XH1（泵 1）+ XH3（阀 2），组 2 为
+XH2（泵 2）+ XH4（阀 1）。`intake` 打开对应电磁阀并使泵正向运行，`exhaust`
+打开对应电磁阀并使泵反向运行；动作到时或收到 stop 后，泵停止且两路电磁阀关闭。
+
+```text
+actuator arm
+actuator group 1 intake 300
+actuator group 1 exhaust 300
+actuator group 2 intake 300
+actuator group 2 exhaust 300
+actuator group stop
+actuator disarm
+```
+
+时长限制为 50～30000 ms。`inhale`/`exhale`、`fwd`/`rev` 可分别作为
+`intake`/`exhaust` 的兼容别名。首次测试应卸除机械负载，确认实际充排气方向；若
+方向与逻辑相反，只需调整 `PUMP1_FORWARD_INVERTED` 或 `PUMP2_FORWARD_INVERTED`，
+不需要修改引脚连接。
+
+`intake` 和 `exhaust` 在本固件中只表示 H 桥施加到泵电机上的两种相反极性，不代表
+泵或外部气路已经具备双向输送能力。当前水路观察表明所用泵大概率为单向泵，因此现阶段
+只能把这些命令作为泵阀联动和电气方向测试；正式充排气功能需要选用明确支持双向输送的
+泵，或通过电磁阀/气路切换实现，并在空气介质下重新验收。若泵额定介质仅为空气，不得
+继续用水测试，以免液体进入泵体或电机。
+
 首次测试必须卸除机械负载、固定泵和电机，并从短时、低占空比开始。
 
 下电前建议把“上锁”作为固定操作规程，但上锁不是电气上断电的必要条件：断电本身会让
@@ -266,7 +294,7 @@ cmake --build --preset Debug --clean-first
 烧录文件：
 
 ```text
-build/Debug/FCFM_BOARD_TEST_V1.0.5.1.hex
+build/Debug/FCFM_BOARD_TEST_V1.0.5.2.hex
 ```
 
 如果使用 CubeMX 重新生成代码，必须确认 PB12 `SPI2_CS_RADIO` 初始输出为低，且
