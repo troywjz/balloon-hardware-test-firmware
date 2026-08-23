@@ -6,7 +6,7 @@
 
 ## 当前版本
 
-- 飞控硬件：`V1.0.5`；飞控固件：`V1.0.5.1`。
+- 飞控硬件：`V1.0.5`；飞控固件：`V1.0.5.2`。
 - 地面站硬件：`V1.1.0`；地面站固件：`V1.1.0.9`。
 - MCU（Microcontroller Unit，微控制器）：STM32F405RGT6。
 - 串口：USB CDC（Communications Device Class，通信设备类），115200、8-N-1、CRLF。
@@ -25,7 +25,7 @@
 
 更详细的板级说明见 `FCFM/README.md` 和 `ground-station/README.md`。
 
-飞控 `V1.0.5.1` 增加了 `imu stream` 连续诊断命令。该命令以 10 Hz 输出两个候选
+飞控 `V1.0.5.2` 增加了 `imu stream` 连续诊断命令和分组气囊执行器命令。该命令以 10 Hz 输出两个候选
 身份寄存器、原始六轴数据和相邻采样变化数，用于区分 ICM-45686 通信异常、错料和
 焊接问题；使用 `imu stop` 停止。诊断模式不绕过正式功能的器件身份校验，也不驱动
 执行器或启用射频发射。
@@ -48,8 +48,8 @@
 飞控：
 
 ```text
-FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.5.1.hex
-FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.5.1.bin
+FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.5.2.hex
+FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.5.2.bin
 ```
 
 地面站：
@@ -131,11 +131,20 @@ actuator arm
 |---|---|
 | `actuator status` | 查看是否解锁、当前动作和剩余时间 |
 | `actuator valve <通道> <时长ms>` | 通道为 1 或 2；打开指定电磁阀 50～30000 ms，到时自动关闭 |
+| `actuator group <1\|2> <intake\|exhaust> <时长ms>` | 组1=XH1泵1+XH3阀2；组2=XH2泵2+XH4阀1；同时开阀并正/反向运行泵 |
 | `actuator pump <通道> <方向> <时长ms>` | 通道为 1 或 2；方向为 `fwd` 或 `rev`；运行 50～30000 ms |
 | `actuator motor <通道> <方向> <占空比%> <时长ms>` | 通道为 1 或 2；方向为 `fwd` 或 `rev`；占空比 1%～30%；运行 50～30000 ms |
 | `actuator servo <通道> <脉宽us> <时长ms>` | 通道为 1 或 2；脉宽 1000～2000 us；保持 50～30000 ms |
 | `actuator stop` | 立即停止当前动作并上锁 |
 | `actuator disarm` | 与 `actuator stop` 相同，立即停止并上锁 |
+
+分组命令通过飞控板 USB CDC 串口发送。`intake`/`exhaust` 也可写成
+`inhale`/`exhale` 或 `fwd`/`rev`。动作结束、超时或执行 `actuator group stop` 时，
+泵停止并关闭电磁阀。
+
+这里的 `intake`/`exhaust` 是泵电机 H 桥正反极性的逻辑标签，不保证所用泵能够物理
+反向输送。当前水路观察表明泵大概率为单向泵，本命令暂按电气和泵阀联动测试使用；正式
+充排气能力需更换双向泵或增加气路切换后再验收。额定介质仅为空气的泵不得继续用水测试。
 
 `fwd` 是 forward（正向），`rev` 是 reverse（反向）。兼容别名包括 `outputs`、
 `arm outputs`、`stop` 和 `disarm`，建议新测试统一使用 `actuator ...` 形式。

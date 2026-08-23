@@ -154,6 +154,13 @@
 #define MOTOR1_FORWARD_INVERTED      0U
 #define MOTOR2_FORWARD_INVERTED      0U
 
+/* Demo pneumatic groups: XH1(pump 1)+XH3(valve 2),
+   XH2(pump 2)+XH4(valve 1). Intake is logical forward by default. */
+#define GROUP1_PUMP_CHANNEL          1U
+#define GROUP1_VALVE_CHANNEL         2U
+#define GROUP2_PUMP_CHANNEL          2U
+#define GROUP2_VALVE_CHANNEL         1U
+
 typedef struct
 {
   bool valid;
@@ -241,7 +248,8 @@ typedef enum
   BOARD_ACTION_VALVE,
   BOARD_ACTION_PUMP,
   BOARD_ACTION_MOTOR,
-  BOARD_ACTION_SERVO
+  BOARD_ACTION_SERVO,
+  BOARD_ACTION_GROUP
 } BoardActionType;
 
 typedef struct
@@ -678,6 +686,8 @@ static const char *FlightBoardTest_ActionName(BoardActionType type)
       return "motor";
     case BOARD_ACTION_SERVO:
       return "servo";
+    case BOARD_ACTION_GROUP:
+      return "group";
     default:
       return "none";
   }
@@ -687,7 +697,8 @@ static const char *FlightBoardTest_ActionDirection(const BoardActionState *actio
 {
   if ((action == NULL) ||
       ((action->type != BOARD_ACTION_PUMP) &&
-       (action->type != BOARD_ACTION_MOTOR)))
+       (action->type != BOARD_ACTION_MOTOR) &&
+       (action->type != BOARD_ACTION_GROUP)))
   {
     return "na";
   }
@@ -1158,7 +1169,8 @@ static void FlightBoardTest_SendOutputState(void)
       FlightBoardTest_RemainingMs(active_action.deadline);
 
   if ((active_action.type == BOARD_ACTION_PUMP) ||
-      (active_action.type == BOARD_ACTION_MOTOR))
+      (active_action.type == BOARD_ACTION_MOTOR) ||
+      (active_action.type == BOARD_ACTION_GROUP))
   {
     direction = active_action.reverse ? "reverse" : "forward";
   }
@@ -1253,6 +1265,85 @@ static bool FlightBoardTest_StartPump(uint32_t channel,
       "FC pump start channel=%u direction=%s drive_direction=%s duration_ms=%lu\r\n",
       (unsigned int)channel,
       reverse ? "reverse" : "forward",
+      drive_reverse ? "reverse" : "forward",
+      (unsigned long)duration_ms);
+  return true;
+}
+
+static bool FlightBoardTest_StartGroup(uint32_t group,
+                                       bool reverse,
+                                       uint32_t duration_ms)
+{
+  uint32_t pump_channel;
+  uint32_t valve_channel;
+  GPIO_TypeDef *in1_port;
+  GPIO_TypeDef *in2_port;
+  GPIO_TypeDef *valve_port;
+  uint16_t in1_pin;
+  uint16_t in2_pin;
+  uint16_t valve_pin;
+  bool drive_reverse;
+
+  if ((group < 1U) || (group > 2U))
+  {
+    FlightBoardTest_Send(
+        "FC group rejected reason=group_range valid=1..2\r\n");
+    return false;
+  }
+  if (!FlightBoardTest_CheckActionReady(duration_ms, true))
+  {
+    return false;
+  }
+
+  if (group == 1U)
+  {
+    pump_channel = GROUP1_PUMP_CHANNEL;
+    valve_channel = GROUP1_VALVE_CHANNEL;
+  }
+  else
+  {
+    pump_channel = GROUP2_PUMP_CHANNEL;
+    valve_channel = GROUP2_VALVE_CHANNEL;
+  }
+
+  if (pump_channel == 1U)
+  {
+    in1_port = PUMP1_IN1_GPIO_Port;
+    in1_pin = PUMP1_IN1_Pin;
+    in2_port = PUMP1_IN2_GPIO_Port;
+    in2_pin = PUMP1_IN2_Pin;
+  }
+  else
+  {
+    in1_port = PUMP2_IN1_GPIO_Port;
+    in1_pin = PUMP2_IN1_Pin;
+    in2_port = PUMP2_IN2_GPIO_Port;
+    in2_pin = PUMP2_IN2_Pin;
+  }
+  valve_port = valve_channel == 1U ? VALVE1_GPIO_Port : VALVE2_GPIO_Port;
+  valve_pin = valve_channel == 1U ? VALVE1_Pin : VALVE2_Pin;
+  drive_reverse = reverse ^
+                  FlightBoardTest_DirectionIsInverted(BOARD_ACTION_PUMP,
+                                                       pump_channel);
+
+  FlightBoardTest_SetActiveAction(
+      BOARD_ACTION_GROUP, (uint8_t)group, 100U, duration_ms, reverse);
+  HAL_GPIO_WritePin(valve_port, valve_pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(MOTOR_SLEEP_GPIO_Port, MOTOR_SLEEP_Pin, GPIO_PIN_SET);
+  osDelay(1U);
+  HAL_GPIO_WritePin(in1_port,
+                    in1_pin,
+                    drive_reverse ? GPIO_PIN_RESET : GPIO_PIN_SET);
+  HAL_GPIO_WritePin(in2_port,
+                    in2_pin,
+                    drive_reverse ? GPIO_PIN_SET : GPIO_PIN_RESET);
+  FlightBoardTest_Send(
+      "FC group start group=%u pump=%u valve=%u direction=%s "
+      "drive_direction=%s duration_ms=%lu\r\n",
+      (unsigned int)group,
+      (unsigned int)pump_channel,
+      (unsigned int)valve_channel,
+      reverse ? "exhaust" : "intake",
       drive_reverse ? "reverse" : "forward",
       (unsigned long)duration_ms);
   return true;
@@ -3509,7 +3600,8 @@ static void FlightBoardTest_FillTelemetry(BalloonTelemetryPayload *telemetry)
   telemetry->radio_error_count = FlightBoardTest_SaturateU16(radio.error_count);
   telemetry->action_reverse = active_action.reverse &&
                               ((active_action.type == BOARD_ACTION_PUMP) ||
-                               (active_action.type == BOARD_ACTION_MOTOR));
+                               (active_action.type == BOARD_ACTION_MOTOR) ||
+                               (active_action.type == BOARD_ACTION_GROUP));
   telemetry->log_state = mission_log_state;
   memcpy(telemetry->imu_accel,
          latest_imu_sample.accel,
@@ -4492,7 +4584,9 @@ static bool FlightBoardTest_IsRadioEmergencyCommand(const char *command)
          (FlightBoardTest_CommandStartsWithNoCase(command, "mission stop") &&
           (command[12] == '\0')) ||
          (FlightBoardTest_CommandStartsWithNoCase(command, "actuator stop") &&
-          (command[13] == '\0')) ||
+           (command[13] == '\0')) ||
+         (FlightBoardTest_CommandStartsWithNoCase(command, "actuator group stop") &&
+           (command[19] == '\0')) ||
          (FlightBoardTest_CommandStartsWithNoCase(command, "stop") &&
           (command[4] == '\0'));
 }
@@ -4553,6 +4647,8 @@ static void FlightBoardTest_HandleCommand(char *command)
     FlightBoardTest_Send(
         "FC actuator: actuator valve <1|2> <ms> | actuator pump <1|2> <fwd|rev> <ms>\r\n");
     FlightBoardTest_Send(
+        "FC actuator: actuator group <1|2> <intake|exhaust> <ms> | actuator group stop\r\n");
+    FlightBoardTest_Send(
         "FC actuator: actuator motor <1|2> <fwd|rev> <duty1..30> <ms>\r\n");
     FlightBoardTest_Send(
         "FC actuator: actuator servo <1|2> <pulse1000..2000us> <ms>; duration=50..30000ms\r\n");
@@ -4595,7 +4691,8 @@ static void FlightBoardTest_HandleCommand(char *command)
   else if ((strcmp(command, "stop") == 0) ||
            (strcmp(command, "disarm") == 0) ||
            (strcmp(command, "actuator stop") == 0) ||
-           (strcmp(command, "actuator disarm") == 0))
+           (strcmp(command, "actuator disarm") == 0) ||
+           (strcmp(command, "actuator group stop") == 0))
   {
     FlightBoardTest_StopActuators();
     outputs_armed = false;
@@ -4832,6 +4929,33 @@ static void FlightBoardTest_HandleCommand(char *command)
                             &extra)) == 1)
   {
     FlightBoardTest_CaptureGnss((uint32_t)duration_ms);
+  }
+  else if ((fields = sscanf(command,
+                            "actuator group %u %7s %lu %c",
+                            &channel,
+                            direction,
+                            &duration_ms,
+                            &extra)) == 3)
+  {
+    if ((strcmp(direction, "intake") == 0) ||
+        (strcmp(direction, "inhale") == 0) ||
+        (strcmp(direction, "fwd") == 0) ||
+        (strcmp(direction, "forward") == 0))
+    {
+      FlightBoardTest_StartGroup(channel, false, (uint32_t)duration_ms);
+    }
+    else if ((strcmp(direction, "exhaust") == 0) ||
+             (strcmp(direction, "exhale") == 0) ||
+             (strcmp(direction, "rev") == 0) ||
+             (strcmp(direction, "reverse") == 0))
+    {
+      FlightBoardTest_StartGroup(channel, true, (uint32_t)duration_ms);
+    }
+    else
+    {
+      FlightBoardTest_Send(
+          "FC group rejected reason=direction use=intake|exhaust\r\n");
+    }
   }
   else if ((fields = sscanf(command,
                             "actuator valve %u %lu %c",
