@@ -6,7 +6,7 @@
 
 ## 当前版本
 
-- 飞控硬件：`V1.0.5`；飞控固件：`V1.0.5.2`。
+- 飞控硬件：`V1.0.5`；飞控固件：`V1.0.5.3`。
 - 地面站硬件：`V1.1.0`；地面站固件：`V1.1.0.9`。
 - MCU（Microcontroller Unit，微控制器）：STM32F405RGT6。
 - 串口：USB CDC（Communications Device Class，通信设备类），115200、8-N-1、CRLF。
@@ -25,7 +25,7 @@
 
 更详细的板级说明见 `FCFM/README.md` 和 `ground-station/README.md`。
 
-飞控 `V1.0.5.2` 增加了 `imu stream` 连续诊断命令和分组气囊执行器命令。该命令以 10 Hz 输出两个候选
+飞控 `V1.0.5.3` 增加了 `imu stream` 连续诊断命令、分组气囊执行器命令和软件 I²C 诊断命令。该命令以 10 Hz 输出两个候选
 身份寄存器、原始六轴数据和相邻采样变化数，用于区分 ICM-45686 通信异常、错料和
 焊接问题；使用 `imu stop` 停止。诊断模式不绕过正式功能的器件身份校验，也不驱动
 执行器或启用射频发射。
@@ -48,8 +48,8 @@
 飞控：
 
 ```text
-FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.5.2.hex
-FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.5.2.bin
+FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.5.3.hex
+FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.5.3.bin
 ```
 
 地面站：

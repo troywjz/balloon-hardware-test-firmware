@@ -1,7 +1,7 @@
 # FCFM 飞控检测与任务固件
 
 - 飞控硬件版本：`V1.0.5`
-- 飞控固件版本：`V1.0.5.2`
+- 飞控固件版本：`V1.0.5.3`
 - MCU：STM32F405RGT6
 
 固件继续保留 ADC、IMU、I²C/TCA9548、GNSS、SDIO、两个阀、两个泵、两个
@@ -116,6 +116,25 @@ imu stop
 
 正式功能仍只接受 ICM-45686 的 `0x72=0xE9`；诊断模式不把异常身份器件标记为有效
 遥测数据，也不会驱动执行器或启用射频发射。
+
+## IMU 软件 I²C 诊断
+
+当 SPI 读取持续异常、且无法直接探测 LGA 底部焊盘时，可以发送：
+
+```text
+imu i2c diag
+```
+
+该命令不会修改 PCB。执行期间临时停止 IMU 数据流，将 SPI1 反初始化，把 PA5/PA7
+配置为低速开漏软件 I²C，PA4保持高电平选择 I²C 接口，PA6分别驱动 AD0 测试
+`0x68` 和 `0x69` 两个7位地址。命令会检查总线空闲电平、地址/寄存器 ACK，并读取
+`WHO_AM_I(0x72)` 和 `INTF_CONFIG0(0x2C)`；结束后自动恢复 SPI1。
+
+本诊断仅使用 MCU 内部上拉，结果只用于定位问题，不能替代正式 I²C 外部约4.7 kΩ
+上拉。输出中的 `who_stage=2` 或 `intf_stage=2/5` 表示地址阶段没有得到 ACK；若
+有 ACK 且读到 `who=0xE9`，说明 IMU、电源和主要焊接路径基本可工作，问题应集中在
+SPI 的片选、MISO或时序。执行命令前后建议分别发送 `imu stop`、`imureset` 和 `imu`
+确认 SPI 已恢复。
 
 ## 执行器测试
 
@@ -294,7 +313,7 @@ cmake --build --preset Debug --clean-first
 烧录文件：
 
 ```text
-build/Debug/FCFM_BOARD_TEST_V1.0.5.2.hex
+build/Debug/FCFM_BOARD_TEST_V1.0.5.3.hex
 ```
 
 如果使用 CubeMX 重新生成代码，必须确认 PB12 `SPI2_CS_RADIO` 初始输出为低，且

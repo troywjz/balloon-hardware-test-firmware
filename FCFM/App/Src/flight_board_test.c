@@ -57,6 +57,14 @@
 #define IMU_DIAG_42688_DATA_REGISTER  0x1FU
 #define IMU_DIAG_42688_DEFAULT_CONFIG 0x06U
 #define IMU_DIAG_42688_POWER_LOW_NOISE 0x0FU
+#define IMU_I2C_SCL_PIN               GPIO_PIN_5
+#define IMU_I2C_SDA_PIN               GPIO_PIN_7
+#define IMU_I2C_AD0_PIN               GPIO_PIN_6
+#define IMU_I2C_DELAY_MS              1U
+#define IMU_I2C_SCL_TIMEOUT_MS        10U
+#define IMU_I2C_WHO_AM_I_REGISTER     0x72U
+#define IMU_I2C_INTF_CONFIG0_REGISTER 0x2CU
+#define IMU_I2C_WHO_AM_I_EXPECTED     0xE9U
 #define MISSION_COMMAND_TTL_MIN_MS   100U
 #define MISSION_COMMAND_TTL_MAX_MS   5000U
 #define MISSION_CLOCK_FUTURE_TOLERANCE_MS 250
@@ -358,6 +366,7 @@ static void FlightBoardTest_SendImuDetails(uint8_t who_am_i,
 static void FlightBoardTest_StartImuStream(void);
 static void FlightBoardTest_StopImuStream(void);
 static void FlightBoardTest_ServiceImuStream(void);
+static void FlightBoardTest_DiagnoseImuI2c(void);
 static void FlightBoardTest_Send(const char *format, ...);
 static HAL_StatusTypeDef FlightBoardTest_ReadAdc(uint32_t *raw,
                                                  uint32_t *pin_mv);
@@ -390,6 +399,322 @@ static void FlightBoardTest_ConfigureOutput(GPIO_TypeDef *port, uint16_t pins)
   gpio.Pull = GPIO_NOPULL;
   gpio.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(port, &gpio);
+}
+
+static void FlightBoardTest_ConfigureImuChipSelect(void)
+{
+  GPIO_InitTypeDef gpio = {0};
+
+  /* Keep IMU CS inactive before configuring the output driver. */
+  HAL_GPIO_WritePin(SPI1_CS_IMU_GPIO_Port,
+                    SPI1_CS_IMU_Pin,
+                    GPIO_PIN_SET);
+  gpio.Pin = SPI1_CS_IMU_Pin;
+  gpio.Mode = GPIO_MODE_OUTPUT_PP;
+  gpio.Pull = GPIO_PULLUP;
+  gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  HAL_GPIO_Init(SPI1_CS_IMU_GPIO_Port, &gpio);
+}
+
+static void FlightBoardTest_ImuI2cDelay(void)
+{
+  /* A deliberately slow bus lets this diagnostic work with MCU pull-ups. */
+  HAL_Delay(IMU_I2C_DELAY_MS);
+}
+
+static bool FlightBoardTest_ImuI2cRaiseScl(void)
+{
+  uint32_t elapsed_ms = 0U;
+
+  HAL_GPIO_WritePin(GPIOA, IMU_I2C_SCL_PIN, GPIO_PIN_SET);
+  while (elapsed_ms < IMU_I2C_SCL_TIMEOUT_MS)
+  {
+    FlightBoardTest_ImuI2cDelay();
+    elapsed_ms += IMU_I2C_DELAY_MS;
+    if (HAL_GPIO_ReadPin(GPIOA, IMU_I2C_SCL_PIN) == GPIO_PIN_SET)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool FlightBoardTest_ImuI2cStart(void)
+{
+  HAL_GPIO_WritePin(GPIOA, IMU_I2C_SDA_PIN, GPIO_PIN_SET);
+  if (!FlightBoardTest_ImuI2cRaiseScl())
+  {
+    return false;
+  }
+  if (HAL_GPIO_ReadPin(GPIOA, IMU_I2C_SDA_PIN) != GPIO_PIN_SET)
+  {
+    return false;
+  }
+  HAL_GPIO_WritePin(GPIOA, IMU_I2C_SDA_PIN, GPIO_PIN_RESET);
+  FlightBoardTest_ImuI2cDelay();
+  HAL_GPIO_WritePin(GPIOA, IMU_I2C_SCL_PIN, GPIO_PIN_RESET);
+  FlightBoardTest_ImuI2cDelay();
+  return true;
+}
+
+static bool FlightBoardTest_ImuI2cStop(void)
+{
+  bool scl_high;
+
+  HAL_GPIO_WritePin(GPIOA, IMU_I2C_SDA_PIN, GPIO_PIN_RESET);
+  FlightBoardTest_ImuI2cDelay();
+  scl_high = FlightBoardTest_ImuI2cRaiseScl();
+  HAL_GPIO_WritePin(GPIOA, IMU_I2C_SDA_PIN, GPIO_PIN_SET);
+  FlightBoardTest_ImuI2cDelay();
+  return scl_high &&
+         (HAL_GPIO_ReadPin(GPIOA, IMU_I2C_SDA_PIN) == GPIO_PIN_SET);
+}
+
+static bool FlightBoardTest_ImuI2cWriteByte(uint8_t value)
+{
+  uint8_t bit;
+  bool ack;
+
+  for (bit = 0U; bit < 8U; ++bit)
+  {
+    HAL_GPIO_WritePin(GPIOA,
+                      IMU_I2C_SDA_PIN,
+                      (value & (uint8_t)(0x80U >> bit)) != 0U
+                          ? GPIO_PIN_SET
+                          : GPIO_PIN_RESET);
+    FlightBoardTest_ImuI2cDelay();
+    if (!FlightBoardTest_ImuI2cRaiseScl())
+    {
+      return false;
+    }
+    HAL_GPIO_WritePin(GPIOA, IMU_I2C_SCL_PIN, GPIO_PIN_RESET);
+    FlightBoardTest_ImuI2cDelay();
+  }
+
+  /* Release SDA so the slave can acknowledge during the ninth clock. */
+  HAL_GPIO_WritePin(GPIOA, IMU_I2C_SDA_PIN, GPIO_PIN_SET);
+  FlightBoardTest_ImuI2cDelay();
+  if (!FlightBoardTest_ImuI2cRaiseScl())
+  {
+    return false;
+  }
+  ack = HAL_GPIO_ReadPin(GPIOA, IMU_I2C_SDA_PIN) == GPIO_PIN_RESET;
+  HAL_GPIO_WritePin(GPIOA, IMU_I2C_SCL_PIN, GPIO_PIN_RESET);
+  FlightBoardTest_ImuI2cDelay();
+  return ack;
+}
+
+static bool FlightBoardTest_ImuI2cReadByte(uint8_t *value)
+{
+  uint8_t bit;
+  uint8_t received = 0U;
+
+  if (value == NULL)
+  {
+    return false;
+  }
+  HAL_GPIO_WritePin(GPIOA, IMU_I2C_SDA_PIN, GPIO_PIN_SET);
+  for (bit = 0U; bit < 8U; ++bit)
+  {
+    if (!FlightBoardTest_ImuI2cRaiseScl())
+    {
+      return false;
+    }
+    received = (uint8_t)(received << 1U);
+    if (HAL_GPIO_ReadPin(GPIOA, IMU_I2C_SDA_PIN) == GPIO_PIN_SET)
+    {
+      received |= 1U;
+    }
+    HAL_GPIO_WritePin(GPIOA, IMU_I2C_SCL_PIN, GPIO_PIN_RESET);
+    FlightBoardTest_ImuI2cDelay();
+  }
+  *value = received;
+  return true;
+}
+
+static bool FlightBoardTest_ImuI2cSendAck(bool acknowledge)
+{
+  HAL_GPIO_WritePin(GPIOA,
+                    IMU_I2C_SDA_PIN,
+                    acknowledge ? GPIO_PIN_RESET : GPIO_PIN_SET);
+  FlightBoardTest_ImuI2cDelay();
+  if (!FlightBoardTest_ImuI2cRaiseScl())
+  {
+    return false;
+  }
+  HAL_GPIO_WritePin(GPIOA, IMU_I2C_SCL_PIN, GPIO_PIN_RESET);
+  FlightBoardTest_ImuI2cDelay();
+  HAL_GPIO_WritePin(GPIOA, IMU_I2C_SDA_PIN, GPIO_PIN_SET);
+  FlightBoardTest_ImuI2cDelay();
+  return true;
+}
+
+static bool FlightBoardTest_ImuI2cReadRegister(uint8_t address_7bit,
+                                               uint8_t register_address,
+                                               uint8_t *value,
+                                               uint8_t *error_stage)
+{
+  bool success = false;
+
+  if ((value == NULL) || (error_stage == NULL))
+  {
+    return false;
+  }
+  *value = 0U;
+  *error_stage = 0U;
+
+  if (!FlightBoardTest_ImuI2cStart())
+  {
+    *error_stage = 1U;
+    goto stop;
+  }
+  if (!FlightBoardTest_ImuI2cWriteByte((uint8_t)(address_7bit << 1U)))
+  {
+    *error_stage = 2U;
+    goto stop;
+  }
+  if (!FlightBoardTest_ImuI2cWriteByte(register_address))
+  {
+    *error_stage = 3U;
+    goto stop;
+  }
+  if (!FlightBoardTest_ImuI2cStart())
+  {
+    *error_stage = 4U;
+    goto stop;
+  }
+  if (!FlightBoardTest_ImuI2cWriteByte((uint8_t)((address_7bit << 1U) | 1U)))
+  {
+    *error_stage = 5U;
+    goto stop;
+  }
+  if (!FlightBoardTest_ImuI2cReadByte(value))
+  {
+    *error_stage = 6U;
+    goto stop;
+  }
+  if (!FlightBoardTest_ImuI2cSendAck(false))
+  {
+    *error_stage = 7U;
+    goto stop;
+  }
+  success = true;
+
+stop:
+  if (!FlightBoardTest_ImuI2cStop() && success)
+  {
+    *error_stage = 8U;
+    success = false;
+  }
+  return success;
+}
+
+static void FlightBoardTest_ConfigureImuI2cBus(bool ad0_high)
+{
+  GPIO_InitTypeDef gpio = {0};
+
+  HAL_GPIO_WritePin(GPIOA,
+                    IMU_I2C_SCL_PIN | IMU_I2C_SDA_PIN,
+                    GPIO_PIN_SET);
+  gpio.Pin = IMU_I2C_SCL_PIN | IMU_I2C_SDA_PIN;
+  gpio.Mode = GPIO_MODE_OUTPUT_OD;
+  gpio.Pull = GPIO_PULLUP;
+  gpio.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &gpio);
+
+  gpio.Pin = IMU_I2C_AD0_PIN;
+  gpio.Mode = GPIO_MODE_OUTPUT_PP;
+  gpio.Pull = GPIO_NOPULL;
+  gpio.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &gpio);
+  HAL_GPIO_WritePin(GPIOA,
+                    IMU_I2C_AD0_PIN,
+                    ad0_high ? GPIO_PIN_SET : GPIO_PIN_RESET);
+
+  /* AP_CS high selects the I2C host interface. */
+  FlightBoardTest_ConfigureImuChipSelect();
+  FlightBoardTest_ImuI2cDelay();
+}
+
+static void FlightBoardTest_DiagnoseImuI2c(void)
+{
+  const uint8_t addresses[] = {0x68U, 0x69U};
+  HAL_StatusTypeDef spi_deinit_result;
+  HAL_StatusTypeDef spi_restore_result;
+  uint8_t index;
+  uint8_t who_am_i;
+  uint8_t intf_config;
+  uint8_t who_stage;
+  uint8_t intf_stage;
+  bool who_ok;
+  bool intf_ok;
+  bool ad0_high;
+  GPIO_PinState scl_idle;
+  GPIO_PinState sda_idle;
+
+  if (imu_stream_enabled)
+  {
+    FlightBoardTest_StopImuStream();
+  }
+  imu.configured = false;
+  latest_imu_sample.valid = false;
+
+  FlightBoardTest_Send(
+      "FC imu i2c begin bus=software scl=PA5 sda=PA7 ad0=PA6 cs=PA4 "
+      "pullup=internal delay_ms=%u note=no_pcb_change\r\n",
+      (unsigned int)IMU_I2C_DELAY_MS);
+
+  spi_deinit_result = HAL_SPI_DeInit(&hspi1);
+  FlightBoardTest_ConfigureImuI2cBus(false);
+  scl_idle = HAL_GPIO_ReadPin(GPIOA, IMU_I2C_SCL_PIN);
+  sda_idle = HAL_GPIO_ReadPin(GPIOA, IMU_I2C_SDA_PIN);
+  FlightBoardTest_Send(
+      "FC imu i2c bus_idle scl=%u sda=%u spi_deinit_hal=%u\r\n",
+      scl_idle == GPIO_PIN_SET ? 1U : 0U,
+      sda_idle == GPIO_PIN_SET ? 1U : 0U,
+      (unsigned int)spi_deinit_result);
+
+  for (index = 0U; index < (uint8_t)(sizeof(addresses) / sizeof(addresses[0]));
+       ++index)
+  {
+    ad0_high = addresses[index] == 0x69U;
+    HAL_GPIO_WritePin(GPIOA,
+                      IMU_I2C_AD0_PIN,
+                      ad0_high ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    FlightBoardTest_ImuI2cDelay();
+    who_ok = FlightBoardTest_ImuI2cReadRegister(
+        addresses[index], IMU_I2C_WHO_AM_I_REGISTER, &who_am_i, &who_stage);
+    intf_ok = FlightBoardTest_ImuI2cReadRegister(
+        addresses[index],
+        IMU_I2C_INTF_CONFIG0_REGISTER,
+        &intf_config,
+        &intf_stage);
+    FlightBoardTest_Send(
+        "FC imu i2c addr=0x%02X ad0=%u who_ack=%u who=0x%02X "
+        "who_stage=%u intf_ack=%u intf=0x%02X intf_stage=%u result=%s\r\n",
+        addresses[index],
+        ad0_high ? 1U : 0U,
+        who_ok ? 1U : 0U,
+        who_am_i,
+        (unsigned int)who_stage,
+        intf_ok ? 1U : 0U,
+        intf_config,
+        (unsigned int)intf_stage,
+        (who_ok && intf_ok && (who_am_i == IMU_I2C_WHO_AM_I_EXPECTED))
+            ? "PASS"
+            : "FAIL");
+  }
+
+  HAL_GPIO_WritePin(GPIOA, IMU_I2C_AD0_PIN, GPIO_PIN_RESET);
+  spi_restore_result = HAL_SPI_Init(&hspi1);
+  if (spi_restore_result == HAL_OK)
+  {
+    FlightBoardTest_ConfigureImuChipSelect();
+  }
+  FlightBoardTest_Send(
+      "FC imu i2c end spi_restore_hal=%u spi_restored=%u note=reset_or_run_imu_afterward\r\n",
+      (unsigned int)spi_restore_result,
+      spi_restore_result == HAL_OK ? 1U : 0U);
 }
 
 static void FlightBoardTest_ConfigureAnalog(GPIO_TypeDef *port, uint16_t pins)
@@ -535,7 +860,8 @@ void FlightBoardTest_EarlySafetyInit(void)
   FlightBoardTest_ConfigureOutput(
       GPIOA,
       GPIO_PIN_0 | GPIO_PIN_1 | PUMP2_IN2_Pin | PUMP2_IN1_Pin |
-          SPI1_CS_IMU_Pin | MOTOR_SLEEP_Pin);
+          MOTOR_SLEEP_Pin);
+  FlightBoardTest_ConfigureImuChipSelect();
   FlightBoardTest_ConfigureOutput(
       GPIOB,
       GPIO_PIN_0 | GPIO_PIN_1 | PUMP1_IN1_Pin | RADIO_RST_Pin |
@@ -4653,7 +4979,7 @@ static void FlightBoardTest_HandleCommand(char *command)
     FlightBoardTest_Send(
         "FC actuator: actuator servo <1|2> <pulse1000..2000us> <ms>; duration=50..30000ms\r\n");
     FlightBoardTest_Send(
-        "FC sensors: imu | imureset | imu stream | imu stop | mag <onboard|external|all> | i2c | i2call | i2c mux <0..7> | i2c diag <0..7> | baro <0..7> | baro all | sht40 | sensors all\r\n");
+        "FC sensors: imu | imureset | imu stream | imu stop | imu i2c diag | mag <onboard|external|all> | i2c | i2call | i2c mux <0..7> | i2c diag <0..7> | baro <0..7> | baro all | sht40 | sensors all\r\n");
   }
   else if (strcmp(command, "version") == 0)
   {
@@ -4739,6 +5065,10 @@ static void FlightBoardTest_HandleCommand(char *command)
   else if (strcmp(command, "imu stop") == 0)
   {
     FlightBoardTest_StopImuStream();
+  }
+  else if (strcmp(command, "imu i2c diag") == 0)
+  {
+    FlightBoardTest_DiagnoseImuI2c();
   }
   else if (strcmp(command, "imureset") == 0)
   {
