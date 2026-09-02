@@ -45,6 +45,10 @@
 #define MISSION_HEARTBEAT_TIMEOUT_MS 6000U
 #define SENSOR_SAMPLE_PERIOD_MS       100U
 #define SENSOR_RETRY_PERIOD_MS        1000U
+#define MAG_STREAM_PERIOD_MS          500U
+#define MAG_STREAM_TARGET_ONBOARD     0x01U
+#define MAG_STREAM_TARGET_EXTERNAL    0x02U
+#define MAG_STREAM_TARGET_ALL         (MAG_STREAM_TARGET_ONBOARD | MAG_STREAM_TARGET_EXTERNAL)
 #define IMU_STREAM_PERIOD_MS          100U
 #define IMU_STREAM_ID_REFRESH_SAMPLES 10U
 #define IMU_DIAG_WHO_45686_REGISTER   0x72U
@@ -238,6 +242,10 @@ static bool imu_stream_has_previous;
 static bool imu_stream_uses_legacy_42688_map;
 static uint32_t mag_onboard_next_retry_tick;
 static uint32_t mag_external_next_retry_tick;
+static bool mag_stream_enabled;
+static uint8_t mag_stream_target;
+static uint32_t mag_stream_next_tick;
+static uint32_t mag_stream_sequence;
 static E28Sx1281 radio;
 static bool radio_attached;
 static bool radio_tx_armed;
@@ -366,6 +374,9 @@ static void FlightBoardTest_SendImuDetails(uint8_t who_am_i,
 static void FlightBoardTest_StartImuStream(void);
 static void FlightBoardTest_StopImuStream(void);
 static void FlightBoardTest_ServiceImuStream(void);
+static void FlightBoardTest_StartMagStream(uint8_t target);
+static void FlightBoardTest_StopMagStream(void);
+static void FlightBoardTest_ServiceMagStream(void);
 static void FlightBoardTest_DiagnoseImuI2c(void);
 static void FlightBoardTest_Send(const char *format, ...);
 static HAL_StatusTypeDef FlightBoardTest_ReadAdc(uint32_t *raw,
@@ -2230,6 +2241,104 @@ static void FlightBoardTest_SendAllMagDetails(void)
   FlightBoardTest_SendMagDetails(&mag_onboard, "onboard");
   FlightBoardTest_SendMagDetails(&mag_external, "external");
   FlightBoardTest_Send("FC mag all end note=review_individual_results\r\n");
+}
+
+static const char *FlightBoardTest_MagStreamTargetName(uint8_t target)
+{
+  switch (target)
+  {
+    case MAG_STREAM_TARGET_ONBOARD:
+      return "onboard";
+    case MAG_STREAM_TARGET_EXTERNAL:
+      return "external";
+    case MAG_STREAM_TARGET_ALL:
+      return "all";
+    default:
+      return "unknown";
+  }
+}
+
+static void FlightBoardTest_SendMagStreamSample(
+    uint32_t sequence,
+    const Mmc5983ma *device,
+    const Mmc5983maSample *sample,
+    const char *location)
+{
+  FlightBoardTest_Send(
+      "FC mag stream seq=%lu location=%s channel=%u initialized=%u "
+      "valid=%u raw=%ld/%ld/%ld mg=%d/%d/%d\r\n",
+      (unsigned long)sequence,
+      location,
+      device != NULL ? (unsigned int)device->mux_channel : 0U,
+      (device != NULL) && device->initialized ? 1U : 0U,
+      (sample != NULL) && sample->valid ? 1U : 0U,
+      sample != NULL ? (long)sample->raw[0] : 0L,
+      sample != NULL ? (long)sample->raw[1] : 0L,
+      sample != NULL ? (long)sample->raw[2] : 0L,
+      sample != NULL ? (int)sample->milli_gauss[0] : 0,
+      sample != NULL ? (int)sample->milli_gauss[1] : 0,
+      sample != NULL ? (int)sample->milli_gauss[2] : 0);
+}
+
+static void FlightBoardTest_StartMagStream(uint8_t target)
+{
+  if ((target != MAG_STREAM_TARGET_ONBOARD) &&
+      (target != MAG_STREAM_TARGET_EXTERNAL) &&
+      (target != MAG_STREAM_TARGET_ALL))
+  {
+    FlightBoardTest_Send(
+        "FC mag stream rejected reason=target use=onboard|external|all\r\n");
+    return;
+  }
+
+  mag_stream_target = target;
+  mag_stream_enabled = true;
+  mag_stream_sequence = 0U;
+  mag_stream_next_tick = HAL_GetTick();
+  FlightBoardTest_Send(
+      "FC mag stream active=1 period_ms=%u target=%s stop=mag_stop\r\n",
+      (unsigned int)MAG_STREAM_PERIOD_MS,
+      FlightBoardTest_MagStreamTargetName(target));
+}
+
+static void FlightBoardTest_StopMagStream(void)
+{
+  mag_stream_enabled = false;
+  FlightBoardTest_Send(
+      "FC mag stream active=0 samples=%lu result=stopped\r\n",
+      (unsigned long)mag_stream_sequence);
+}
+
+static void FlightBoardTest_ServiceMagStream(void)
+{
+  uint32_t now;
+
+  if (!mag_stream_enabled)
+  {
+    return;
+  }
+  now = HAL_GetTick();
+  if ((int32_t)(now - mag_stream_next_tick) < 0)
+  {
+    return;
+  }
+  mag_stream_next_tick = now + MAG_STREAM_PERIOD_MS;
+  ++mag_stream_sequence;
+
+  if ((mag_stream_target & MAG_STREAM_TARGET_ONBOARD) != 0U)
+  {
+    FlightBoardTest_SendMagStreamSample(mag_stream_sequence,
+                                        &mag_onboard,
+                                        &latest_mag_onboard_sample,
+                                        "onboard");
+  }
+  if ((mag_stream_target & MAG_STREAM_TARGET_EXTERNAL) != 0U)
+  {
+    FlightBoardTest_SendMagStreamSample(mag_stream_sequence,
+                                        &mag_external,
+                                        &latest_mag_external_sample,
+                                        "external");
+  }
 }
 
 static void FlightBoardTest_ServiceMagSensor(
@@ -4979,7 +5088,7 @@ static void FlightBoardTest_HandleCommand(char *command)
     FlightBoardTest_Send(
         "FC actuator: actuator servo <1|2> <pulse1000..2000us> <ms>; duration=50..30000ms\r\n");
     FlightBoardTest_Send(
-        "FC sensors: imu | imureset | imu stream | imu stop | imu i2c diag | mag <onboard|external|all> | i2c | i2call | i2c mux <0..7> | i2c diag <0..7> | baro <0..7> | baro all | sht40 | sensors all\r\n");
+        "FC sensors: imu | imureset | imu stream | imu stop | imu i2c diag | mag <onboard|external|all> | mag stream [onboard|external|all] | mag stop | i2c | i2call | i2c mux <0..7> | i2c diag <0..7> | baro <0..7> | baro all | sht40 | sensors all\r\n");
   }
   else if (strcmp(command, "version") == 0)
   {
@@ -5086,6 +5195,23 @@ static void FlightBoardTest_HandleCommand(char *command)
   else if (strcmp(command, "mag external") == 0)
   {
     FlightBoardTest_SendMagDetails(&mag_external, "external");
+  }
+  else if (strcmp(command, "mag stream") == 0 ||
+           strcmp(command, "mag stream all") == 0)
+  {
+    FlightBoardTest_StartMagStream(MAG_STREAM_TARGET_ALL);
+  }
+  else if (strcmp(command, "mag stream onboard") == 0)
+  {
+    FlightBoardTest_StartMagStream(MAG_STREAM_TARGET_ONBOARD);
+  }
+  else if (strcmp(command, "mag stream external") == 0)
+  {
+    FlightBoardTest_StartMagStream(MAG_STREAM_TARGET_EXTERNAL);
+  }
+  else if (strcmp(command, "mag stop") == 0)
+  {
+    FlightBoardTest_StopMagStream();
   }
   else if ((strcmp(command, "radio") == 0) ||
            (strcmp(command, "radio status") == 0))
@@ -5496,6 +5622,7 @@ void FlightBoardTest_Run(void)
       FlightBoardTest_ServiceSafety();
       FlightBoardTest_ServiceRadioArm();
       FlightBoardTest_ServiceSensors();
+      FlightBoardTest_ServiceMagStream();
       FlightBoardTest_ServiceImuStream();
       FlightBoardTest_ServiceMission();
       FlightBoardTest_ServiceMissionLogging();

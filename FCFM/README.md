@@ -1,7 +1,7 @@
 # FCFM 飞控检测与任务固件
 
 - 飞控硬件版本：`V1.0.5`
-- 飞控固件版本：`V1.0.5.3`
+- 飞控固件版本：`V1.0.5.4`
 - MCU：STM32F405RGT6
 
 固件继续保留 ADC、IMU、I²C/TCA9548、GNSS、SDIO、两个阀、两个泵、两个
@@ -73,6 +73,10 @@ sht40
 mag onboard
 mag external
 mag all
+mag stream onboard
+mag stream external
+mag stream all
+mag stop
 sensors all
 ```
 
@@ -88,6 +92,12 @@ sensors all
 的 MMC5983MA；驱动每次只允许一个 TCA9548 通道导通，完成或失败后都会关闭全部
 下游通道。`sensors all` 会依次执行三颗 BMP580、一颗 SHT40 和两颗 MMC5983MA
 的集中测试；`test` 中的环境传感器步骤也使用相同映射。
+
+`mag stream [onboard|external|all]` 每 500 ms 输出传感器缓存中的原始计数和 mG
+数据，适合移动磁铁或旋转传感器观察数值是否变化；默认使用 `all`，发送 `mag stop`
+停止。板载磁力计固定为 `TCA9548 ch4/SCL4/SDA4`，SH7 外接磁力计固定为
+`TCA9548 ch5/SCL5/SDA5`，两者地址均为 `0x30`。该命令不会访问IMU，也不会驱动
+执行器或射频。若外接模块未安装，对应通道显示 `initialized=0 valid=0` 属于预期。
 
 ## IMU 连续诊断
 
@@ -313,7 +323,7 @@ cmake --build --preset Debug --clean-first
 烧录文件：
 
 ```text
-build/Debug/FCFM_BOARD_TEST_V1.0.5.3.hex
+build/Debug/FCFM_BOARD_TEST_V1.0.5.4.hex
 ```
 
 如果使用 CubeMX 重新生成代码，必须确认 PB12 `SPI2_CS_RADIO` 初始输出为低，且
