@@ -372,6 +372,8 @@ extern volatile uint32_t g_sd_clk_level;
 
 static void FlightBoardTest_SendImuDetails(uint8_t who_am_i,
                                            HAL_StatusTypeDef who_result);
+static void FlightBoardTest_SendImuRawDiagnostic(const char *stage,
+                                                 bool identity_trusted);
 static void FlightBoardTest_StartImuStream(void);
 static void FlightBoardTest_StopImuStream(void);
 static void FlightBoardTest_ServiceImuStream(void);
@@ -1994,6 +1996,9 @@ static HAL_StatusTypeDef FlightBoardTest_ReadImuWhoAmI(uint8_t *who_am_i)
 static void FlightBoardTest_ResetAndProbeImu(void)
 {
   uint8_t who_am_i = 0U;
+  uint8_t accel_config = 0U;
+  uint8_t gyro_config = 0U;
+  uint8_t power_config = 0U;
   HAL_StatusTypeDef reset_result;
   HAL_StatusTypeDef who_result = HAL_ERROR;
   HAL_StatusTypeDef init_result = HAL_ERROR;
@@ -2003,21 +2008,43 @@ static void FlightBoardTest_ResetAndProbeImu(void)
   {
     who_result = FlightBoardTest_ReadImuWhoAmI(&who_am_i);
   }
-  if ((who_result == HAL_OK) &&
-      (who_am_i == ICM45686_WHO_AM_I_EXPECTED))
+  if (reset_result == HAL_OK)
   {
-    init_result = Icm45686_Initialize(&imu);
+    /* Match the RoEx behavior: continue reading even if identity fails. */
+    init_result = Icm45686_ConfigureForDiagnostic(&imu,
+                                                  &accel_config,
+                                                  &gyro_config,
+                                                  &power_config);
+    imu.configured = init_result == HAL_OK;
   }
 
   FlightBoardTest_Send(
-      "FC imu reset model=ICM-45686 reset_hal=%u who=0x%02X expected=0x%02X read_hal=%u init_hal=%u result=%s\r\n",
+      "FC imu init model=ICM-45686 reset_hal=%u who=0x%02X expected=0x%02X "
+      "read_hal=%u config=0x%02X/0x%02X/0x%02X config_hal=%u result=%s\r\n",
       (unsigned int)reset_result,
       who_am_i,
       ICM45686_WHO_AM_I_EXPECTED,
       (unsigned int)who_result,
+      accel_config,
+      gyro_config,
+      power_config,
       (unsigned int)init_result,
-      init_result == HAL_OK ? "PASS" : "FAIL");
-  FlightBoardTest_SendImuDetails(who_am_i, who_result);
+      (reset_result == HAL_OK) &&
+              (who_result == HAL_OK) &&
+              (who_am_i == ICM45686_WHO_AM_I_EXPECTED) &&
+              (init_result == HAL_OK)
+          ? "PASS"
+          : "FAIL");
+  if ((who_result == HAL_OK) &&
+      (who_am_i == ICM45686_WHO_AM_I_EXPECTED) &&
+      (init_result == HAL_OK))
+  {
+    FlightBoardTest_SendImuDetails(who_am_i, who_result);
+  }
+  else if (reset_result == HAL_OK)
+  {
+    FlightBoardTest_SendImuRawDiagnostic("init_failed", false);
+  }
 }
 
 static void FlightBoardTest_CompareImuTransactions(void)
@@ -2125,6 +2152,43 @@ static void FlightBoardTest_SendImuDetails(uint8_t who_am_i,
     FlightBoardTest_Send("FC imu raw read_failed hal=%u\r\n",
                         (unsigned int)result);
   }
+}
+
+static void FlightBoardTest_SendImuRawDiagnostic(const char *stage,
+                                                 bool identity_trusted)
+{
+  uint8_t raw_data[ICM45686_RAW_DATA_LENGTH];
+  Icm45686Sample sample = {0};
+  HAL_StatusTypeDef result = Icm45686_ReadDiagnosticSample(&imu,
+                                                           &sample,
+                                                           raw_data);
+
+  FlightBoardTest_Send(
+      "FC imu raw model=ICM-45686 stage=%s identity_trusted=%u "
+      "raw=%02X%02X/%02X%02X/%02X%02X/%02X%02X/%02X%02X/%02X%02X "
+      "ax=%d ay=%d az=%d gx=%d gy=%d gz=%d hal=%u result=%s\r\n",
+      stage,
+      identity_trusted ? 1U : 0U,
+      raw_data[0],
+      raw_data[1],
+      raw_data[2],
+      raw_data[3],
+      raw_data[4],
+      raw_data[5],
+      raw_data[6],
+      raw_data[7],
+      raw_data[8],
+      raw_data[9],
+      raw_data[10],
+      raw_data[11],
+      (int)sample.accel[0],
+      (int)sample.accel[1],
+      (int)sample.accel[2],
+      (int)sample.gyro[0],
+      (int)sample.gyro[1],
+      (int)sample.gyro[2],
+      (unsigned int)result,
+      result == HAL_OK ? "TRANSFER_OK" : "READ_FAIL");
 }
 
 static const char *FlightBoardTest_ImuModelHint(uint8_t id_45686,
@@ -5367,15 +5431,15 @@ static void FlightBoardTest_HandleCommand(char *command)
   }
   else if (strcmp(command, "imu spi normal") == 0)
   {
-    FlightBoardTest_SetImuSpiSpeed(SPI_BAUDRATEPRESCALER_32, "normal");
+    FlightBoardTest_SetImuSpiSpeed(SPI_BAUDRATEPRESCALER_4, "normal");
   }
   else if (strcmp(command, "imu spi slow") == 0)
   {
-    FlightBoardTest_SetImuSpiSpeed(SPI_BAUDRATEPRESCALER_64, "slow");
+    FlightBoardTest_SetImuSpiSpeed(SPI_BAUDRATEPRESCALER_8, "slow");
   }
   else if (strcmp(command, "imu spi veryslow") == 0)
   {
-    FlightBoardTest_SetImuSpiSpeed(SPI_BAUDRATEPRESCALER_128, "veryslow");
+    FlightBoardTest_SetImuSpiSpeed(SPI_BAUDRATEPRESCALER_32, "veryslow");
   }
   else if (strcmp(command, "imu") == 0)
   {
@@ -5826,6 +5890,8 @@ void FlightBoardTest_Run(void)
   system_mode = BALLOON_SYSTEM_MODE_MAINTENANCE;
   FlightBoardTest_EnforceAllSafety();
   outputs_armed = false;
+  FlightBoardTest_Send("FC imu boot_init begin mode=maintenance\r\n");
+  FlightBoardTest_ResetAndProbeImu();
 
   for (;;)
   {
