@@ -428,7 +428,8 @@ static void FlightBoardTest_ConfigureImuChipSelect(void)
                     GPIO_PIN_SET);
   gpio.Pin = SPI1_CS_IMU_Pin;
   gpio.Mode = GPIO_MODE_OUTPUT_PP;
-  gpio.Pull = GPIO_PULLUP;
+  /* CS is actively driven by PA4; the external R55 provides idle-high bias. */
+  gpio.Pull = GPIO_NOPULL;
   gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
   HAL_GPIO_Init(SPI1_CS_IMU_GPIO_Port, &gpio);
 }
@@ -2032,7 +2033,10 @@ static void FlightBoardTest_CompareImuTransactions(void)
   bool full_valid;
   bool split_valid;
 
-  full_result = FlightBoardTest_ReadImuWhoAmI(&full_who_am_i);
+  full_result = Icm45686_ReadRegistersContinuous(&imu,
+                                                 IMU_DIAG_WHO_45686_REGISTER,
+                                                 &full_who_am_i,
+                                                 1U);
   full_spi_error = HAL_SPI_GetError(&hspi1);
   split_result = Icm45686_ReadRegisterSplit(&imu,
                                             IMU_DIAG_WHO_45686_REGISTER,
