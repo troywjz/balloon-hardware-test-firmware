@@ -106,8 +106,8 @@ I²C 是 Inter-Integrated Circuit，两线串行总线。飞控通过 TCA9548 �
 | `i2c mux <0..7>` | 选择并扫描指定通道 |
 | `i2c diag <0..7>` | 对指定通道执行多速率、总线电平和气压计地址诊断 |
 | `baro <0..7>` | 自动识别并读取指定通道的 BMP3/BMP58x 气压计 |
-| `baro all` | 读取 XH7、XH8、XH9 三颗 BMP580，并计算 XH8/XH9 相对 XH7 的压差 |
-| `sht40` | 读取 XH10 上的 SHT40 温度和相对湿度 |
+| `baro all` | 读取 SH1、SH2、SH3 三颗 BMP580，并计算 SH2/SH3 相对 SH1 的压差 |
+| `sht40` | 读取 SH4 上的 SHT40 温度和相对湿度 |
 | `mag onboard` / `mag external` / `mag all` | 读取 TCA9548 ch4 板载和 ch5/SH7 外接 MMC5983MA 的 Product ID 与三轴磁场 |
 | `mag stream [onboard|external|all]` | 每500 ms输出板载/外接磁力计缓存的原始值和 mG 值，`mag stop`停止 |
 | `imu i2c diag` | 临时将 SPI1 引脚切为软件I²C，测试ICM-45686的0x68/0x69地址和WHO_AM_I；结束后恢复SPI |
@@ -117,10 +117,10 @@ I²C 是 Inter-Integrated Circuit，两线串行总线。飞控通过 TCA9548 �
 
 | 接口 | 通道 | 模块 | 建议对象 |
 |---|---:|---|---|
-| XH7 | 0 | BMP580 | 外界大气，压差基准 |
-| XH8 | 1 | BMP580 | 氦气升力囊 |
-| XH9 | 2 | BMP580 | 空气压载囊 |
-| XH10 | 3 | SHT40 | 外界温湿度 |
+| SH1 | 0 | BMP580 | 外界大气，压差基准 |
+| SH2 | 1 | BMP580 | 氦气升力囊 |
+| SH3 | 2 | BMP580 | 空气压载囊 |
+| SH4 | 3 | SHT40 | 外界温湿度 |
 
 ### 执行器命令
 
