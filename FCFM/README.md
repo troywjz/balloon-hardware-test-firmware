@@ -1,7 +1,7 @@
 # FCFM 飞控检测与任务固件
 
 - 飞控硬件版本：`V1.0.5`
-- 飞控固件版本：`V1.0.5.4`
+- 飞控固件版本：`V1.0.5.5`
 - MCU：STM32F405RGT6
 
 固件继续保留 ADC、IMU、I²C/TCA9548、GNSS、SDIO、两个阀、两个泵、两个
@@ -108,8 +108,8 @@ imu stream
 ```
 
 固件会尝试写入 ICM-45686 的 16 g/100 Hz、2000 dps/100 Hz 和六轴低噪声配置，
-但不会因为 `WHO_AM_I` 异常而停止；随后以 10 Hz 连续输出 `0x72`、`0x75` 两个
-候选身份寄存器、`0x00`～`0x0B` 的 12 个原始字节、解码后的六轴有符号整数、相邻
+但不会因为 `WHO_AM_I` 异常而停止；随后以 10 Hz 连续输出 `0x72`、旧型号兼容探测的
+`0x75`、`0x00`～`0x0B` 的 12 个原始字节、解码后的六轴有符号整数、相邻
 采样变化字节数和 HAL 传输结果。该模式只用于判断总线、错料和原始数据是否随运动
 变化，`TRANSFER_OK` 不等于器件已经通过身份校验。
 
@@ -126,6 +126,35 @@ imu stop
 
 正式功能仍只接受 ICM-45686 的 `0x72=0xE9`；诊断模式不把异常身份器件标记为有效
 遥测数据，也不会驱动执行器或启用射频发射。
+
+`imu cs` 会先输出 MCU 对 CS 的高低电平读回，然后保持 CS 为低电平 5 秒；测量完成
+后自动恢复高电平。`imu spi normal`、`imu spi slow`、`imu spi veryslow` 分别选择
+SPI1 `/32`、`/64`、`/128` 分频，当前 84 MHz APB2 时钟下约为 2.625 MHz、1.3125 MHz
+和 656 kHz。`imu` 命令会比较保持 CS 低电平的整帧读取与分段读取，并报告 HAL SPI
+错误码；`HAL_OK` 只表示 STM32 SPI 外设完成传输，不表示 IMU 返回了有效身份。
+
+### 无逻辑分析仪的 IMU 测试顺序
+
+以下测试只在 `maintenance` 模式进行，建议先只连接 USB，断开执行器和电池侧负载：
+
+1. 发送 `version`，确认固件为 `V1.0.5.5`；发送 `imu stop`，停止连续诊断。
+2. 万用表置直流电压档，黑表笔接 GND，分别测 C12 两端中非 GND 端和 C13 两端中非
+   GND 端；两路都应约为 3.3 V。不要直接给 LGA 焊盘加力。
+3. 发送 `imu cs`。串口出现 `hold_low_ms=5000` 后，测 R55 左侧的 AP_CS 端对 GND，
+   应接近 0 V；同时 R55 右侧 3V3_SYS 端应约为 3.3 V。命令结束后 AP_CS 应恢复约
+   3.3 V。若串口 `reset_read=0` 但 R55 左侧仍为高电平，说明 MCU 到 R55/IMU 的
+   实际网络存在开路或测错位置。
+4. 依次发送 `imu spi veryslow`、`imu`，再发送 `imu spi slow`、`imu`，最后发送
+   `imu spi normal`、`imu`，记录每次的 `full` 和 `split` 值。三档都为 `0x01`，且
+   `full` 与 `split` 相同，说明不是 SPI 频率或 HAL 事务形式导致的。
+5. 发送 `imu i2c diag`。若两个地址仍为 `who_ack=0` 且 `who_stage=2`，说明器件在
+   AP_CS 置高的 I²C 访问下也没有应答；随后发送 `imureset`，让 SPI1 恢复后的状态
+   重新初始化。
+
+结果判定：CS 高低正常、三档 SPI 和整帧/分段读取均固定为 `0x01`，并且软件 I²C
+地址阶段仍 NACK 时，优先检查 IMU 两路电源在芯片附近是否真实存在、LGA pin 1/pin 12
+方向与焊接，不再优先修改 INT1/INT2 或继续降低 SPI 频率。若 `id72=0xE9`，而
+`id75_legacy` 异常，只说明旧器件兼容探测值异常，不影响 ICM-45686 身份判断。
 
 ## IMU 软件 I²C 诊断
 
@@ -323,7 +352,7 @@ cmake --build --preset Debug --clean-first
 烧录文件：
 
 ```text
-build/Debug/FCFM_BOARD_TEST_V1.0.5.4.hex
+build/Debug/FCFM_BOARD_TEST_V1.0.5.5.hex
 ```
 
 如果使用 CubeMX 重新生成代码，必须确认 PB12 `SPI2_CS_RADIO` 初始输出为低，且
