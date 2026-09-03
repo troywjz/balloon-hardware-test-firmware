@@ -51,6 +51,7 @@
 #define MAG_STREAM_TARGET_ALL         (MAG_STREAM_TARGET_ONBOARD | MAG_STREAM_TARGET_EXTERNAL)
 #define IMU_STREAM_PERIOD_MS          100U
 #define IMU_STREAM_ID_REFRESH_SAMPLES 10U
+#define IMU_CS_METER_HOLD_MS          5000U
 #define IMU_DIAG_WHO_45686_REGISTER   0x72U
 #define IMU_DIAG_WHO_42688_REGISTER   0x75U
 #define IMU_DIAG_WHO_42688_EXPECTED   0x47U
@@ -374,6 +375,11 @@ static void FlightBoardTest_SendImuDetails(uint8_t who_am_i,
 static void FlightBoardTest_StartImuStream(void);
 static void FlightBoardTest_StopImuStream(void);
 static void FlightBoardTest_ServiceImuStream(void);
+static void FlightBoardTest_DiagnoseImuChipSelect(void);
+static void FlightBoardTest_SetImuSpiSpeed(uint32_t prescaler,
+                                           const char *speed_name);
+static const char *FlightBoardTest_ImuSpiPrescalerName(void);
+static uint32_t FlightBoardTest_ImuSpiClockHz(void);
 static void FlightBoardTest_StartMagStream(uint8_t target);
 static void FlightBoardTest_StopMagStream(void);
 static void FlightBoardTest_ServiceMagStream(void);
@@ -425,6 +431,149 @@ static void FlightBoardTest_ConfigureImuChipSelect(void)
   gpio.Pull = GPIO_PULLUP;
   gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
   HAL_GPIO_Init(SPI1_CS_IMU_GPIO_Port, &gpio);
+}
+
+static const char *FlightBoardTest_ImuSpiPrescalerName(void)
+{
+  switch (hspi1.Init.BaudRatePrescaler)
+  {
+    case SPI_BAUDRATEPRESCALER_32:
+      return "/32";
+    case SPI_BAUDRATEPRESCALER_64:
+      return "/64";
+    case SPI_BAUDRATEPRESCALER_128:
+      return "/128";
+    case SPI_BAUDRATEPRESCALER_256:
+      return "/256";
+    case SPI_BAUDRATEPRESCALER_16:
+      return "/16";
+    case SPI_BAUDRATEPRESCALER_8:
+      return "/8";
+    case SPI_BAUDRATEPRESCALER_4:
+      return "/4";
+    case SPI_BAUDRATEPRESCALER_2:
+      return "/2";
+    default:
+      return "/unknown";
+  }
+}
+
+static uint32_t FlightBoardTest_ImuSpiClockHz(void)
+{
+  uint32_t divider;
+
+  switch (hspi1.Init.BaudRatePrescaler)
+  {
+    case SPI_BAUDRATEPRESCALER_2:
+      divider = 2U;
+      break;
+    case SPI_BAUDRATEPRESCALER_4:
+      divider = 4U;
+      break;
+    case SPI_BAUDRATEPRESCALER_8:
+      divider = 8U;
+      break;
+    case SPI_BAUDRATEPRESCALER_16:
+      divider = 16U;
+      break;
+    case SPI_BAUDRATEPRESCALER_32:
+      divider = 32U;
+      break;
+    case SPI_BAUDRATEPRESCALER_64:
+      divider = 64U;
+      break;
+    case SPI_BAUDRATEPRESCALER_128:
+      divider = 128U;
+      break;
+    case SPI_BAUDRATEPRESCALER_256:
+      divider = 256U;
+      break;
+    default:
+      return 0U;
+  }
+  return HAL_RCC_GetPCLK2Freq() / divider;
+}
+
+static void FlightBoardTest_SetImuSpiSpeed(uint32_t prescaler,
+                                           const char *speed_name)
+{
+  HAL_StatusTypeDef deinit_result;
+  HAL_StatusTypeDef init_result = HAL_ERROR;
+
+  if (system_mode != BALLOON_SYSTEM_MODE_MAINTENANCE)
+  {
+    FlightBoardTest_Send(
+        "FC imu spi rejected reason=maintenance_only mode=%s\r\n",
+        BalloonRadio_SystemModeName(system_mode));
+    return;
+  }
+
+  /* Keep the IMU deselected while the peripheral pins are reconfigured. */
+  HAL_GPIO_WritePin(SPI1_CS_IMU_GPIO_Port, SPI1_CS_IMU_Pin, GPIO_PIN_SET);
+  deinit_result = HAL_SPI_DeInit(&hspi1);
+  if (deinit_result == HAL_OK)
+  {
+    hspi1.Init.BaudRatePrescaler = prescaler;
+    init_result = HAL_SPI_Init(&hspi1);
+  }
+  FlightBoardTest_ConfigureImuChipSelect();
+  FlightBoardTest_Send(
+      "FC imu spi speed=%s prescaler=%s pclk2_hz=%lu spi_hz=%lu "
+      "deinit_hal=%u init_hal=%u result=%s\r\n",
+      speed_name,
+      FlightBoardTest_ImuSpiPrescalerName(),
+      (unsigned long)HAL_RCC_GetPCLK2Freq(),
+      (unsigned long)FlightBoardTest_ImuSpiClockHz(),
+      (unsigned int)deinit_result,
+      (unsigned int)init_result,
+      init_result == HAL_OK ? "PASS" : "FAIL");
+}
+
+static void FlightBoardTest_DiagnoseImuChipSelect(void)
+{
+  GPIO_PinState high_level;
+  GPIO_PinState low_level;
+  GPIO_PinState restored_level;
+
+  if (system_mode != BALLOON_SYSTEM_MODE_MAINTENANCE)
+  {
+    FlightBoardTest_Send(
+        "FC imu cs rejected reason=maintenance_only mode=%s\r\n",
+        BalloonRadio_SystemModeName(system_mode));
+    return;
+  }
+  if (imu_stream_enabled)
+  {
+    FlightBoardTest_StopImuStream();
+  }
+
+  FlightBoardTest_ConfigureImuChipSelect();
+  HAL_GPIO_WritePin(SPI1_CS_IMU_GPIO_Port, SPI1_CS_IMU_Pin, GPIO_PIN_SET);
+  osDelay(10U);
+  high_level = HAL_GPIO_ReadPin(SPI1_CS_IMU_GPIO_Port, SPI1_CS_IMU_Pin);
+  HAL_GPIO_WritePin(SPI1_CS_IMU_GPIO_Port, SPI1_CS_IMU_Pin, GPIO_PIN_RESET);
+  osDelay(10U);
+  low_level = HAL_GPIO_ReadPin(SPI1_CS_IMU_GPIO_Port, SPI1_CS_IMU_Pin);
+
+  FlightBoardTest_Send(
+      "FC imu cs set_read=%u reset_read=%u hold_low_ms=%u "
+      "spi=%s/%lu result=%s\r\n",
+      high_level == GPIO_PIN_SET ? 1U : 0U,
+      low_level == GPIO_PIN_SET ? 1U : 0U,
+      (unsigned int)IMU_CS_METER_HOLD_MS,
+      FlightBoardTest_ImuSpiPrescalerName(),
+      (unsigned long)FlightBoardTest_ImuSpiClockHz(),
+      (low_level == GPIO_PIN_RESET) ? "PASS" : "FAIL");
+
+  /* Hold the active-low CS long enough for a multimeter measurement. */
+  osDelay(IMU_CS_METER_HOLD_MS);
+  HAL_GPIO_WritePin(SPI1_CS_IMU_GPIO_Port, SPI1_CS_IMU_Pin, GPIO_PIN_SET);
+  osDelay(10U);
+  restored_level = HAL_GPIO_ReadPin(SPI1_CS_IMU_GPIO_Port, SPI1_CS_IMU_Pin);
+  FlightBoardTest_Send(
+      "FC imu cs released_read=%u result=%s\r\n",
+      restored_level == GPIO_PIN_SET ? 1U : 0U,
+      restored_level == GPIO_PIN_SET ? "PASS" : "FAIL");
 }
 
 static void FlightBoardTest_ImuI2cDelay(void)
@@ -1872,18 +2021,58 @@ static void FlightBoardTest_ResetAndProbeImu(void)
 
 static void FlightBoardTest_CompareImuTransactions(void)
 {
-  uint8_t who_am_i = 0U;
-  HAL_StatusTypeDef result = FlightBoardTest_ReadImuWhoAmI(&who_am_i);
+  uint8_t full_who_am_i = 0U;
+  uint8_t split_who_am_i = 0U;
+  uint8_t selected_who_am_i;
+  HAL_StatusTypeDef full_result;
+  HAL_StatusTypeDef split_result;
+  HAL_StatusTypeDef selected_result;
+  uint32_t full_spi_error;
+  uint32_t split_spi_error;
+  bool full_valid;
+  bool split_valid;
+
+  full_result = FlightBoardTest_ReadImuWhoAmI(&full_who_am_i);
+  full_spi_error = HAL_SPI_GetError(&hspi1);
+  split_result = Icm45686_ReadRegisterSplit(&imu,
+                                            IMU_DIAG_WHO_45686_REGISTER,
+                                            &split_who_am_i);
+  split_spi_error = HAL_SPI_GetError(&hspi1);
+  full_valid = (full_result == HAL_OK) &&
+               (full_who_am_i == ICM45686_WHO_AM_I_EXPECTED);
+  split_valid = (split_result == HAL_OK) &&
+                (split_who_am_i == ICM45686_WHO_AM_I_EXPECTED);
+  if (full_valid)
+  {
+    selected_who_am_i = full_who_am_i;
+    selected_result = full_result;
+  }
+  else if (split_valid)
+  {
+    selected_who_am_i = split_who_am_i;
+    selected_result = split_result;
+  }
+  else
+  {
+    selected_who_am_i = full_who_am_i;
+    selected_result = full_result;
+  }
 
   FlightBoardTest_Send(
-      "FC imu probe model=ICM-45686 who=0x%02X expected=0x%02X hal=%u result=%s\r\n",
-      who_am_i,
+      "FC imu probe model=ICM-45686 full=0x%02X/%u split=0x%02X/%u "
+      "expected=0x%02X spi=%s/%lu full_error=0x%08lX "
+      "split_error=0x%08lX result=%s\r\n",
+      full_who_am_i,
+      (unsigned int)full_result,
+      split_who_am_i,
+      (unsigned int)split_result,
       ICM45686_WHO_AM_I_EXPECTED,
-      (unsigned int)result,
-      (result == HAL_OK) && (who_am_i == ICM45686_WHO_AM_I_EXPECTED)
-          ? "PASS"
-          : "FAIL");
-  FlightBoardTest_SendImuDetails(who_am_i, result);
+      FlightBoardTest_ImuSpiPrescalerName(),
+      (unsigned long)FlightBoardTest_ImuSpiClockHz(),
+      (unsigned long)full_spi_error,
+      (unsigned long)split_spi_error,
+      (full_valid || split_valid) ? "PASS" : "FAIL");
+  FlightBoardTest_SendImuDetails(selected_who_am_i, selected_result);
 }
 
 static void FlightBoardTest_SendImuDetails(uint8_t who_am_i,
@@ -2049,7 +2238,7 @@ static void FlightBoardTest_StartImuStream(void)
 
   FlightBoardTest_Send(
       "FC imu stream active=1 period_ms=%u model_hint=%s data_reg=0x%02X "
-      "id72=0x%02X id75=0x%02X id_hal=%u/%u "
+      "id72=0x%02X id75_legacy=0x%02X id_hal=%u/%u "
       "cfg_readback=0x%02X/0x%02X/0x%02X cfg_hal=%u "
       "warning=diagnostic_identity_not_trusted stop=imu_stop\r\n",
       (unsigned int)IMU_STREAM_PERIOD_MS,
@@ -2145,7 +2334,8 @@ static void FlightBoardTest_ServiceImuStream(void)
   }
   ++imu_stream_sequence;
   FlightBoardTest_Send(
-      "FC imu stream seq=%lu tick=%lu model_hint=%s id72=0x%02X id75=0x%02X "
+      "FC imu stream seq=%lu tick=%lu model_hint=%s id72=0x%02X "
+      "id75_legacy=0x%02X "
       "raw=%02X%02X/%02X%02X/%02X%02X/%02X%02X/%02X%02X/%02X%02X "
       "ax=%d ay=%d az=%d gx=%d gy=%d gz=%d changed=%u hal=%u result=%s\r\n",
       (unsigned long)imu_stream_sequence,
@@ -5088,7 +5278,11 @@ static void FlightBoardTest_HandleCommand(char *command)
     FlightBoardTest_Send(
         "FC actuator: actuator servo <1|2> <pulse1000..2000us> <ms>; duration=50..30000ms\r\n");
     FlightBoardTest_Send(
-        "FC sensors: imu | imureset | imu stream | imu stop | imu i2c diag | mag <onboard|external|all> | mag stream [onboard|external|all] | mag stop | i2c | i2call | i2c mux <0..7> | i2c diag <0..7> | baro <0..7> | baro all | sht40 | sensors all\r\n");
+        "FC sensors: imu | imureset | imu cs | imu spi normal|slow|veryslow | "
+        "imu stream | imu stop | imu i2c diag | mag <onboard|external|all> | "
+        "mag stream [onboard|external|all] | mag stop | i2c | i2call | "
+        "i2c mux <0..7> | i2c diag <0..7> | baro <0..7> | baro all | "
+        "sht40 | sensors all\r\n");
   }
   else if (strcmp(command, "version") == 0)
   {
@@ -5162,6 +5356,22 @@ static void FlightBoardTest_HandleCommand(char *command)
   else if (strcmp(command, "inputs") == 0)
   {
     FlightBoardTest_SendInputs();
+  }
+  else if (strcmp(command, "imu cs") == 0)
+  {
+    FlightBoardTest_DiagnoseImuChipSelect();
+  }
+  else if (strcmp(command, "imu spi normal") == 0)
+  {
+    FlightBoardTest_SetImuSpiSpeed(SPI_BAUDRATEPRESCALER_32, "normal");
+  }
+  else if (strcmp(command, "imu spi slow") == 0)
+  {
+    FlightBoardTest_SetImuSpiSpeed(SPI_BAUDRATEPRESCALER_64, "slow");
+  }
+  else if (strcmp(command, "imu spi veryslow") == 0)
+  {
+    FlightBoardTest_SetImuSpiSpeed(SPI_BAUDRATEPRESCALER_128, "veryslow");
   }
   else if (strcmp(command, "imu") == 0)
   {

@@ -41,7 +41,9 @@ HAL_StatusTypeDef Icm45686_WriteRegister(Icm45686 *device,
 
 static int16_t Icm45686_DecodeInt16(const uint8_t *data)
 {
-  return (int16_t)(((uint16_t)data[0] << 8U) | (uint16_t)data[1]);
+  /* ICM-45686 defaults to little-endian sensor-register data. */
+  return (int16_t)((uint16_t)data[0] |
+                   ((uint16_t)data[1] << 8U));
 }
 
 void Icm45686_Construct(Icm45686 *device,
@@ -105,6 +107,34 @@ HAL_StatusTypeDef Icm45686_ReadRegister(Icm45686 *device,
                                         uint8_t *value)
 {
   return Icm45686_ReadRegisters(device, register_address, value, 1U);
+}
+
+HAL_StatusTypeDef Icm45686_ReadRegisterSplit(Icm45686 *device,
+                                             uint8_t register_address,
+                                             uint8_t *value)
+{
+  uint8_t command = register_address | ICM45686_SPI_READ_BIT;
+  HAL_StatusTypeDef result;
+
+  if ((device == NULL) || (device->spi == NULL) ||
+      (device->chip_select_port == NULL) || (value == NULL))
+  {
+    return HAL_ERROR;
+  }
+
+  HAL_GPIO_WritePin(device->chip_select_port,
+                    device->chip_select_pin,
+                    GPIO_PIN_RESET);
+  result = HAL_SPI_Transmit(device->spi, &command, 1U, device->timeout_ms);
+  if (result == HAL_OK)
+  {
+    /* Keep CS asserted while the master clocks the response byte. */
+    result = HAL_SPI_Receive(device->spi, value, 1U, device->timeout_ms);
+  }
+  HAL_GPIO_WritePin(device->chip_select_port,
+                    device->chip_select_pin,
+                    GPIO_PIN_SET);
+  return result;
 }
 
 HAL_StatusTypeDef Icm45686_ReadWhoAmI(Icm45686 *device, uint8_t *who_am_i)
@@ -193,7 +223,8 @@ HAL_StatusTypeDef Icm45686_ConfigureForDiagnostic(
   }
   if (result == HAL_OK)
   {
-    HAL_Delay(50U);
+    /* Use a conservative margin over the documented gyro startup time. */
+    HAL_Delay(70U);
     result = Icm45686_ReadRegister(device,
                                    ICM45686_ACCEL_CONFIG0_REGISTER,
                                    accel_config_readback);

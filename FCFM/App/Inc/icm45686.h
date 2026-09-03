@@ -36,6 +36,9 @@ HAL_StatusTypeDef Icm45686_ReadRegisters(Icm45686 *device,
 HAL_StatusTypeDef Icm45686_ReadRegister(Icm45686 *device,
                                         uint8_t register_address,
                                         uint8_t *value);
+HAL_StatusTypeDef Icm45686_ReadRegisterSplit(Icm45686 *device,
+                                             uint8_t register_address,
+                                             uint8_t *value);
 HAL_StatusTypeDef Icm45686_WriteRegister(Icm45686 *device,
                                          uint8_t register_address,
                                          uint8_t value);
