@@ -6,7 +6,7 @@
 
 ## 当前版本
 
-- 飞控硬件：`V1.0.5`；飞控固件：`V1.0.5.8`。
+- 飞控硬件：`V1.0.5`；飞控固件：`V1.0.5.9`。
 - 地面站硬件：`V1.1.0`；地面站固件：`V1.1.0.9`。
 - MCU（Microcontroller Unit，微控制器）：STM32F405RGT6。
 - 串口：USB CDC（Communications Device Class，通信设备类），115200、8-N-1、CRLF。
@@ -25,10 +25,12 @@
 
 更详细的板级说明见 `FCFM/README.md` 和 `ground-station/README.md`。
 
-飞控 `V1.0.5.8` 增加了 IMU 的上电初始化与未通过身份校验时的原始数据读取、CS 静态
+飞控 `V1.0.5.9` 增加了 IMU 的上电初始化与未通过身份校验时的原始数据读取、CS 静态
 电平自检、SPI 速率切换、整帧/分段读取对比，
 将分段读取设为常规 ICM-45686 SPI 读路径，PA4 使用推挽输出并取消 MCU 内部上拉，
 由原理图外部 R55 继续负责 CS 空闲高电平，并修正 ICM-45686 六轴数据的默认小端解析。
+SPI1 默认切换为 ICM-45686 官方驱动采用的 Mode3，同时保留 Mode0 运行时对照，新增
+地址发送后等待时间诊断命令。默认等待时间仍为 0 ms。
 `imu stream` 输出中的 `id75_legacy` 只
 用于旧 ICM-42688P 兼容探测，不是 ICM-45686 的身份值。诊断模式不绕过正式功能的
 器件身份校验，也不驱动执行器或启用射频发射。
@@ -94,6 +96,7 @@ cmake --build --preset Debug --clean-first
 | `imu` | 比较 ICM-45686 的连续整帧/分段 SPI（Serial Peripheral Interface，串行外设接口）读取事务 |
 | `imu cs` | 检查 CS 高低电平并保持低电平 5 秒，便于用万用表测量 |
 | `imu spi normal\|slow\|veryslow` | 切换 SPI1 为 `/4`、`/8`、`/32` 分频 |
+| `imu spi mode0\|mode3` | 切换 SPI1 的 CPOL/CPHA，默认 Mode3 |
 | `imu spi delay 0\|1\|10\|100` | 设置分段读取中发送地址后、接收数据前的等待时间（毫秒） |
 | `imureset` | 执行 ICM-45686 复位和 WHO_AM_I 探测 |
 | `gnss <100..3000ms>` | 在指定时间内捕获 GNSS（Global Navigation Satellite System，全球卫星导航系统）串口数据 |
