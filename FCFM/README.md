@@ -43,8 +43,8 @@ test
 4. E28 安全状态和无发射 SPI 探测。
 5. ICM-45686 复位、WHO_AM_I 和六轴原始数据探测。
 6. I²C 上游及 TCA9548 八个下游通道扫描。
-7. 按原理图映射读取 XH7、XH8、XH9 上的三颗 BMP580，计算相对 XH7 的
-   压差，读取 XH10 上的 SHT40 温湿度，并分别读取 TCA9548 ch4/ch5 上的
+7. 按原理图映射读取 SH1、SH2、SH3 上的三颗 BMP580，计算相对 SH1 的
+   压差，读取 SH4 上的 SHT40 温湿度，并分别读取 TCA9548 ch4/ch5 上的
    板载和外接 MMC5983MA。
 8. USART6 GNSS 1000 ms 数据捕获。
 9. SD 卡挂载和临时文件写入/读回/删除验证。
@@ -83,10 +83,10 @@ sensors all
 `baro <0..7>` 会自动识别两代传感器。BMP3 系列读取出厂校准参数并使用 Bosch
 整数补偿；BMP58x 输出已经在芯片内部线性化，固件按数据手册比例换算。命令打印
 24 位原始值、摄氏温度和 Pa 气压，随后让传感器回到待机/睡眠模式并关闭 TCA9548
-下游通道。`baro all` 固定按 `XH7/ch0=BMP580`、`XH8/ch1=BMP580`、
-`XH9/ch2=BMP580` 依次测试，并输出相对 XH7 的压差。
+下游通道。`baro all` 固定按 `SH1/ch0=BMP580`、`SH2/ch1=BMP580`、
+`SH3/ch2=BMP580` 依次测试，并输出相对 SH1 的压差。
 
-`sht40` 固定读取 `XH10/ch3` 上地址 `0x44` 或 `0x45` 的 SHT40，使用无加热高精度
+`sht40` 固定读取 `SH4/ch3` 上地址 `0x44` 或 `0x45` 的 SHT40，使用无加热高精度
 测量命令，校验两段 CRC-8（Cyclic Redundancy Check，循环冗余校验）后输出温度和
 相对湿度。`mag onboard` 和 `mag external` 分别读取 `ch4`、`ch5` 上地址 `0x30`
 的 MMC5983MA；驱动每次只允许一个 TCA9548 通道导通，完成或失败后都会关闭全部
@@ -96,7 +96,7 @@ sensors all
 `mag stream [onboard|external|all]` 每 500 ms 输出传感器缓存中的原始计数和 mG
 数据，适合移动磁铁或旋转传感器观察数值是否变化；默认使用 `all`，发送 `mag stop`
 停止。板载磁力计固定为 `TCA9548 ch4/SCL4/SDA4`，SH7 外接磁力计固定为
-`TCA9548 ch5/SCL5/SDA5`，两者地址均为 `0x30`。该命令不会访问IMU，也不会驱动
+`TCA9548 ch5/SCL5/SDA5`（外接接口SH7），两者地址均为 `0x30`。该命令不会访问IMU，也不会驱动
 执行器或射频。若外接模块未安装，对应通道显示 `initialized=0 valid=0` 属于预期。
 
 ## IMU 连续诊断

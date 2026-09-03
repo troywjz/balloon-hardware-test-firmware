@@ -2775,11 +2775,11 @@ static const char *FlightBoardTest_BarometerConnectorName(uint8_t channel)
   switch (channel)
   {
     case 0U:
-      return "XH7";
+      return "SH1";
     case 1U:
-      return "XH8";
+      return "SH2";
     case 2U:
-      return "XH9";
+      return "SH3";
     default:
       return "UNMAPPED";
   }
@@ -3322,16 +3322,16 @@ static void FlightBoardTest_ReadExpectedBarometers(void)
     const char *connector;
     const char *expected_model;
   } expected[] = {
-      {FC_I2C_MUX_CHANNEL_BARO_1, "XH7", "BMP580"},
-      {FC_I2C_MUX_CHANNEL_BARO_2, "XH8", "BMP580"},
-      {FC_I2C_MUX_CHANNEL_BARO_3, "XH9", "BMP580"}};
+      {FC_I2C_MUX_CHANNEL_BARO_1, "SH1", "BMP580"},
+      {FC_I2C_MUX_CHANNEL_BARO_2, "SH2", "BMP580"},
+      {FC_I2C_MUX_CHANNEL_BARO_3, "SH3", "BMP580"}};
   FlightBoardBarometerSample samples[3] = {0};
   bool valid[3] = {false, false, false};
   size_t index;
   uint32_t pass_count = 0U;
 
   FlightBoardTest_Send(
-      "FC baro all begin mapping=XH7/ch0:BMP580,XH8/ch1:BMP580,XH9/ch2:BMP580\r\n");
+      "FC baro all begin mapping=SH1/ch0:BMP580,SH2/ch1:BMP580,SH3/ch2:BMP580\r\n");
   for (index = 0U; index < (sizeof(expected) / sizeof(expected[0])); ++index)
   {
     bool measurement_valid = FlightBoardTest_ReadBarometer(
@@ -3360,7 +3360,7 @@ static void FlightBoardTest_ReadExpectedBarometers(void)
 
       FlightBoardTest_Send(
           "FC baro summary connector=%s channel=%u expected=%s detected=%s "
-          "address=0x%02X pressure_pa=%lu.%02lu delta_vs_xh7_pa=%s%lu.%02lu result=PASS\r\n",
+          "address=0x%02X pressure_pa=%lu.%02lu delta_vs_sh1_pa=%s%lu.%02lu result=PASS\r\n",
           expected[index].connector,
           (unsigned int)expected[index].channel,
           expected[index].expected_model,
@@ -3376,7 +3376,7 @@ static void FlightBoardTest_ReadExpectedBarometers(void)
     {
       FlightBoardTest_Send(
           "FC baro summary connector=%s channel=%u expected=%s detected=%s "
-          "address=0x%02X pressure_pa=%lu.%02lu delta_vs_xh7_pa=unavailable "
+          "address=0x%02X pressure_pa=%lu.%02lu delta_vs_sh1_pa=unavailable "
           "result=PASS\r\n",
           expected[index].connector,
           (unsigned int)expected[index].channel,
@@ -3390,7 +3390,7 @@ static void FlightBoardTest_ReadExpectedBarometers(void)
     {
       FlightBoardTest_Send(
           "FC baro summary connector=%s channel=%u expected=%s detected=%s "
-          "delta_vs_xh7_pa=unavailable result=FAIL\r\n",
+          "delta_vs_sh1_pa=unavailable result=FAIL\r\n",
           expected[index].connector,
           (unsigned int)expected[index].channel,
           expected[index].expected_model,
@@ -3521,7 +3521,7 @@ static bool FlightBoardTest_ReadSht40(uint8_t channel)
   humidity_magnitude = (uint32_t)humidity_x100;
 
   FlightBoardTest_Send(
-      "FC sht40 data connector=XH10 channel=%u model=SHT40 address=0x%02X "
+      "FC sht40 data connector=SH4 channel=%u model=SHT40 address=0x%02X "
       "raw_temp=%u raw_rh=%u temperature_c=%s%lu.%02lu humidity_rh=%lu.%02lu "
       "crc=%s rh_clamped=%u result=%s\r\n",
       (unsigned int)channel,
@@ -3545,7 +3545,7 @@ cleanup:
   (void)HAL_I2C_Master_Transmit(
       &hi2c1, TCA9548_ADDRESS_8BIT, &disable, 1U, 50U);
   FlightBoardTest_Send(
-      "FC sht40 failed connector=XH10 channel=%u step=%s hal=%u "
+      "FC sht40 failed connector=SH4 channel=%u step=%s hal=%u "
       "error=0x%08lX control=0x%02X result=FAIL\r\n",
       (unsigned int)channel,
       step,
@@ -3558,9 +3558,9 @@ cleanup:
 static void FlightBoardTest_ReadExpectedEnvironmentalSensors(void)
 {
   FlightBoardTest_Send(
-      "FC sensors all begin mapping=XH7/ch0:BMP580,XH8/ch1:BMP580,"
-      "XH9/ch2:BMP580,XH10/ch3:SHT40,onboard/ch4:MMC5983MA,"
-      "external/ch5:MMC5983MA\r\n");
+      "FC sensors all begin mapping=SH1/ch0:BMP580,SH2/ch1:BMP580,"
+      "SH3/ch2:BMP580,SH4/ch3:SHT40,onboard/ch4:MMC5983MA,"
+      "external/SH7/ch5:MMC5983MA\r\n");
   FlightBoardTest_ReadExpectedBarometers();
   (void)FlightBoardTest_ReadSht40(FC_I2C_MUX_CHANNEL_SHT40);
   FlightBoardTest_SendAllMagDetails();
