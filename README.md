@@ -6,7 +6,7 @@
 
 ## 当前版本
 
-- 飞控硬件：`V1.0.5`；飞控固件：`V1.0.5.5`。
+- 飞控硬件：`V1.0.5`；飞控固件：`V1.0.5.6`。
 - 地面站硬件：`V1.1.0`；地面站固件：`V1.1.0.9`。
 - MCU（Microcontroller Unit，微控制器）：STM32F405RGT6。
 - 串口：USB CDC（Communications Device Class，通信设备类），115200、8-N-1、CRLF。
@@ -25,8 +25,10 @@
 
 更详细的板级说明见 `FCFM/README.md` 和 `ground-station/README.md`。
 
-飞控 `V1.0.5.5` 增加了 IMU 的 CS 静态电平自检、SPI 速率切换、整帧/分段读取对比，
-并修正 ICM-45686 六轴数据的默认小端解析。`imu stream` 输出中的 `id75_legacy` 只
+飞控 `V1.0.5.6` 增加了 IMU 的 CS 静态电平自检、SPI 速率切换、整帧/分段读取对比，
+将分段读取设为常规 ICM-45686 SPI 读路径，PA4 使用推挽输出并取消 MCU 内部上拉，
+由原理图外部 R55 继续负责 CS 空闲高电平，并修正 ICM-45686 六轴数据的默认小端解析。
+`imu stream` 输出中的 `id75_legacy` 只
 用于旧 ICM-42688P 兼容探测，不是 ICM-45686 的身份值。诊断模式不绕过正式功能的
 器件身份校验，也不驱动执行器或启用射频发射。
 
@@ -48,8 +50,8 @@
 飞控：
 
 ```text
-FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.5.5.hex
-FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.5.5.bin
+FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.5.6.hex
+FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.5.6.bin
 ```
 
 地面站：
@@ -88,7 +90,7 @@ cmake --build --preset Debug --clean-first
 | `test` | 依次检测 USB、ADC、输入、射频无发射探测、IMU、I²C、GNSS 和 TF 卡读写 |
 | `adc` | 读取电池电压采样的 ADC（Analog-to-Digital Converter，模数转换器）原始值和估算电压 |
 | `inputs` | 读取 IMU 中断、射频 BUSY/DIO1、电机故障和 TF 卡检测输入 |
-| `imu` | 比较 ICM-45686 的整帧/分段 SPI（Serial Peripheral Interface，串行外设接口）读取事务 |
+| `imu` | 比较 ICM-45686 的连续整帧/分段 SPI（Serial Peripheral Interface，串行外设接口）读取事务 |
 | `imu cs` | 检查 CS 高低电平并保持低电平 5 秒，便于用万用表测量 |
 | `imu spi normal\|slow\|veryslow` | 切换 SPI1 为 `/32`、`/64`、`/128` 分频 |
 | `imureset` | 执行 ICM-45686 复位和 WHO_AM_I 探测 |

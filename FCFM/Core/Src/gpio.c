@@ -86,7 +86,8 @@ void MX_GPIO_Init(void)
   /*Configure GPIO pin : SPI1_CS_IMU_Pin */
   GPIO_InitStruct.Pin = SPI1_CS_IMU_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  /* The external R55 resistor provides the inactive-high CS bias. */
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
   HAL_GPIO_Init(SPI1_CS_IMU_GPIO_Port, &GPIO_InitStruct);
 

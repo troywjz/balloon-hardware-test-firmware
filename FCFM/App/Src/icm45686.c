@@ -64,10 +64,10 @@ void Icm45686_Construct(Icm45686 *device,
   HAL_GPIO_WritePin(chip_select_port, chip_select_pin, GPIO_PIN_SET);
 }
 
-HAL_StatusTypeDef Icm45686_ReadRegisters(Icm45686 *device,
-                                         uint8_t register_address,
-                                         uint8_t *data,
-                                         uint16_t length)
+HAL_StatusTypeDef Icm45686_ReadRegistersContinuous(Icm45686 *device,
+                                                   uint8_t register_address,
+                                                   uint8_t *data,
+                                                   uint16_t length)
 {
   uint8_t tx_data[ICM45686_MAX_BURST_READ_LENGTH + 1U];
   uint8_t rx_data[ICM45686_MAX_BURST_READ_LENGTH + 1U];
@@ -109,19 +109,22 @@ HAL_StatusTypeDef Icm45686_ReadRegister(Icm45686 *device,
   return Icm45686_ReadRegisters(device, register_address, value, 1U);
 }
 
-HAL_StatusTypeDef Icm45686_ReadRegisterSplit(Icm45686 *device,
+HAL_StatusTypeDef Icm45686_ReadRegistersSplit(Icm45686 *device,
                                              uint8_t register_address,
-                                             uint8_t *value)
+                                             uint8_t *data,
+                                             uint16_t length)
 {
-  uint8_t command = register_address | ICM45686_SPI_READ_BIT;
+  uint8_t command;
   HAL_StatusTypeDef result;
 
   if ((device == NULL) || (device->spi == NULL) ||
-      (device->chip_select_port == NULL) || (value == NULL))
+      (device->chip_select_port == NULL) || (data == NULL) ||
+      (length == 0U) || (length > ICM45686_MAX_BURST_READ_LENGTH))
   {
     return HAL_ERROR;
   }
 
+  command = register_address | ICM45686_SPI_READ_BIT;
   HAL_GPIO_WritePin(device->chip_select_port,
                     device->chip_select_pin,
                     GPIO_PIN_RESET);
@@ -129,12 +132,28 @@ HAL_StatusTypeDef Icm45686_ReadRegisterSplit(Icm45686 *device,
   if (result == HAL_OK)
   {
     /* Keep CS asserted while the master clocks the response byte. */
-    result = HAL_SPI_Receive(device->spi, value, 1U, device->timeout_ms);
+    result = HAL_SPI_Receive(device->spi, data, length, device->timeout_ms);
   }
   HAL_GPIO_WritePin(device->chip_select_port,
                     device->chip_select_pin,
                     GPIO_PIN_SET);
   return result;
+}
+
+HAL_StatusTypeDef Icm45686_ReadRegisters(Icm45686 *device,
+                                         uint8_t register_address,
+                                         uint8_t *data,
+                                         uint16_t length)
+{
+  /* Use the RoEx-style split transaction for normal ICM-45686 reads. */
+  return Icm45686_ReadRegistersSplit(device, register_address, data, length);
+}
+
+HAL_StatusTypeDef Icm45686_ReadRegisterSplit(Icm45686 *device,
+                                             uint8_t register_address,
+                                             uint8_t *value)
+{
+  return Icm45686_ReadRegistersSplit(device, register_address, value, 1U);
 }
 
 HAL_StatusTypeDef Icm45686_ReadWhoAmI(Icm45686 *device, uint8_t *who_am_i)
