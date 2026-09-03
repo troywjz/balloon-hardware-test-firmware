@@ -380,6 +380,7 @@ static void FlightBoardTest_ServiceImuStream(void);
 static void FlightBoardTest_DiagnoseImuChipSelect(void);
 static void FlightBoardTest_SetImuSpiSpeed(uint32_t prescaler,
                                            const char *speed_name);
+static void FlightBoardTest_SetImuResponseDelay(uint32_t delay_ms);
 static const char *FlightBoardTest_ImuSpiPrescalerName(void);
 static uint32_t FlightBoardTest_ImuSpiClockHz(void);
 static void FlightBoardTest_StartMagStream(uint8_t target);
@@ -530,6 +531,24 @@ static void FlightBoardTest_SetImuSpiSpeed(uint32_t prescaler,
       (unsigned int)deinit_result,
       (unsigned int)init_result,
       init_result == HAL_OK ? "PASS" : "FAIL");
+}
+
+static void FlightBoardTest_SetImuResponseDelay(uint32_t delay_ms)
+{
+  if (system_mode != BALLOON_SYSTEM_MODE_MAINTENANCE)
+  {
+    FlightBoardTest_Send(
+        "FC imu spi delay rejected reason=maintenance_only mode=%s\r\n",
+        BalloonRadio_SystemModeName(system_mode));
+    return;
+  }
+
+  imu.response_delay_ms = delay_ms;
+  FlightBoardTest_Send(
+      "FC imu spi delay_ms=%lu spi=%s/%lu result=PASS\r\n",
+      (unsigned long)imu.response_delay_ms,
+      FlightBoardTest_ImuSpiPrescalerName(),
+      (unsigned long)FlightBoardTest_ImuSpiClockHz());
 }
 
 static void FlightBoardTest_DiagnoseImuChipSelect(void)
@@ -2091,7 +2110,7 @@ static void FlightBoardTest_CompareImuTransactions(void)
 
   FlightBoardTest_Send(
       "FC imu probe model=ICM-45686 full=0x%02X/%u split=0x%02X/%u "
-      "expected=0x%02X spi=%s/%lu full_error=0x%08lX "
+      "expected=0x%02X spi=%s/%lu delay_ms=%lu full_error=0x%08lX "
       "split_error=0x%08lX result=%s\r\n",
       full_who_am_i,
       (unsigned int)full_result,
@@ -2100,6 +2119,7 @@ static void FlightBoardTest_CompareImuTransactions(void)
       ICM45686_WHO_AM_I_EXPECTED,
       FlightBoardTest_ImuSpiPrescalerName(),
       (unsigned long)FlightBoardTest_ImuSpiClockHz(),
+      (unsigned long)imu.response_delay_ms,
       (unsigned long)full_spi_error,
       (unsigned long)split_spi_error,
       (full_valid || split_valid) ? "PASS" : "FAIL");
@@ -5347,6 +5367,7 @@ static void FlightBoardTest_HandleCommand(char *command)
         "FC actuator: actuator servo <1|2> <pulse1000..2000us> <ms>; duration=50..30000ms\r\n");
     FlightBoardTest_Send(
         "FC sensors: imu | imureset | imu cs | imu spi normal|slow|veryslow | "
+        "imu spi delay 0|1|10|100 | "
         "imu stream | imu stop | imu i2c diag | mag <onboard|external|all> | "
         "mag stream [onboard|external|all] | mag stop | i2c | i2call | "
         "i2c mux <0..7> | i2c diag <0..7> | baro <0..7> | baro all | "
@@ -5440,6 +5461,22 @@ static void FlightBoardTest_HandleCommand(char *command)
   else if (strcmp(command, "imu spi veryslow") == 0)
   {
     FlightBoardTest_SetImuSpiSpeed(SPI_BAUDRATEPRESCALER_32, "veryslow");
+  }
+  else if (strcmp(command, "imu spi delay 0") == 0)
+  {
+    FlightBoardTest_SetImuResponseDelay(0U);
+  }
+  else if (strcmp(command, "imu spi delay 1") == 0)
+  {
+    FlightBoardTest_SetImuResponseDelay(1U);
+  }
+  else if (strcmp(command, "imu spi delay 10") == 0)
+  {
+    FlightBoardTest_SetImuResponseDelay(10U);
+  }
+  else if (strcmp(command, "imu spi delay 100") == 0)
+  {
+    FlightBoardTest_SetImuResponseDelay(100U);
   }
   else if (strcmp(command, "imu") == 0)
   {

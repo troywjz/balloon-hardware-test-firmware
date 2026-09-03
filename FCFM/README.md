@@ -1,7 +1,7 @@
 # FCFM 飞控检测与任务固件
 
 - 飞控硬件版本：`V1.0.5`
-- 飞控固件版本：`V1.0.5.7`
+- 飞控固件版本：`V1.0.5.8`
 - MCU：STM32F405RGT6
 
 固件继续保留 ADC、IMU、I²C/TCA9548、GNSS、SDIO、两个阀、两个泵、两个
@@ -127,7 +127,7 @@ imu stop
 正式功能仍只接受 ICM-45686 的 `0x72=0xE9`；诊断模式不把异常身份器件标记为有效
 遥测数据，也不会驱动执行器或启用射频发射。
 
-V1.0.5.7 上电后会在维护任务中执行一次 ICM-45686 复位、WHO_AM_I、六轴配置和原始
+V1.0.5.8 上电后会在维护任务中执行一次 ICM-45686 复位、WHO_AM_I、六轴配置和原始
 数据读取；即使身份校验失败，也会继续打印一次未认证的原始六轴数据，便于与 RoEx
 的“初始化失败后仍继续读取”行为对比。它将保持 CS 低电平的分段事务设为常规读取
 路径，同时保留连续整帧事务用于对比。`imu cs` 会先输出 MCU 对 CS 的高低电平读回，然后保持 CS 为低电平 5 秒；测量完成
@@ -141,7 +141,7 @@ PA4 使用推挽输出，MCU 内部不启用上拉；外部 R55 继续提供 CS 
 
 以下测试只在 `maintenance` 模式进行，建议先只连接 USB，断开执行器和电池侧负载：
 
-1. 发送 `version`，确认固件为 `V1.0.5.7`；上电启动输出会先显示一次 `boot_init`，
+1. 发送 `version`，确认固件为 `V1.0.5.8`；上电启动输出会先显示一次 `boot_init`，
    也可发送 `imu stop` 停止连续诊断。
 2. 万用表置直流电压档，黑表笔接 GND，分别测 C12 两端中非 GND 端和 C13 两端中非
    GND 端；两路都应约为 3.3 V。不要直接给 LGA 焊盘加力。
@@ -149,8 +149,10 @@ PA4 使用推挽输出，MCU 内部不启用上拉；外部 R55 继续提供 CS 
    应接近 0 V；同时 R55 右侧 3V3_SYS 端应约为 3.3 V。命令结束后 AP_CS 应恢复约
    3.3 V。若串口 `reset_read=0` 但 R55 左侧仍为高电平，说明 MCU 到 R55/IMU 的
    实际网络存在开路或测错位置。
-4. 依次发送 `imu spi veryslow`、`imu`，再发送 `imu spi slow`、`imu`，最后发送
-   `imu spi normal`、`imu`，记录每次的 `full` 和 `split` 值。三档都为 `0x01`，且
+4. 在 `imu spi normal` 下依次发送 `imu spi delay 0`、`imu`，`imu spi delay 1`、`imu`，
+   `imu spi delay 10`、`imu`，`imu spi delay 100`、`imu`，记录每次的 `full`、`split`
+   和 `delay_ms`。随后可用 `imu spi delay 0` 恢复无等待状态。若需要对照频率，再发送
+   `imu spi veryslow` 后重复测试。若所有组合都为 `0x01`，且
    `full` 与 `split` 相同，说明不是 SPI 频率或 HAL 事务形式导致的。
 5. 发送 `imu i2c diag`。若两个地址仍为 `who_ack=0` 且 `who_stage=2`，说明器件在
    AP_CS 置高的 I²C 访问下也没有应答；随后发送 `imureset`，让 SPI1 恢复后的状态
@@ -357,7 +359,7 @@ cmake --build --preset Debug --clean-first
 烧录文件：
 
 ```text
-build/Debug/FCFM_BOARD_TEST_V1.0.5.7.hex
+build/Debug/FCFM_BOARD_TEST_V1.0.5.8.hex
 ```
 
 如果使用 CubeMX 重新生成代码，必须确认 PB12 `SPI2_CS_RADIO` 初始输出为低，且

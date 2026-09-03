@@ -61,6 +61,7 @@ void Icm45686_Construct(Icm45686 *device,
   device->chip_select_port = chip_select_port;
   device->chip_select_pin = chip_select_pin;
   device->timeout_ms = 100U;
+  device->response_delay_ms = 0U;
   HAL_GPIO_WritePin(chip_select_port, chip_select_pin, GPIO_PIN_SET);
 }
 
@@ -132,6 +133,10 @@ HAL_StatusTypeDef Icm45686_ReadRegistersSplit(Icm45686 *device,
   if (result == HAL_OK)
   {
     /* Keep CS asserted while the master clocks the response byte. */
+    if (device->response_delay_ms != 0U)
+    {
+      HAL_Delay(device->response_delay_ms);
+    }
     result = HAL_SPI_Receive(device->spi, data, length, device->timeout_ms);
   }
   HAL_GPIO_WritePin(device->chip_select_port,

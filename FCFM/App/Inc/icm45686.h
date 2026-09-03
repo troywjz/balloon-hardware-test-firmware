@@ -22,6 +22,7 @@ typedef struct
   GPIO_TypeDef *chip_select_port;
   uint16_t chip_select_pin;
   uint32_t timeout_ms;
+  uint32_t response_delay_ms;
   bool configured;
 } Icm45686;
 
