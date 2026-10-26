@@ -57,6 +57,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     App/Inc
+    ${CMAKE_CURRENT_SOURCE_DIR}/../FCFM/App/Inc
     ${BALLOON_COMMON_DIR}/Inc
 )
 

@@ -85,8 +85,6 @@
 #define SENSOR_VALID_IMU              (1U << 0)
 #define SENSOR_VALID_MAG_ONBOARD      (1U << 1)
 #define SENSOR_VALID_MAG_EXTERNAL     (1U << 2)
-#define ACTUATOR_MIN_DURATION_MS    50U
-#define ACTUATOR_MAX_DURATION_MS    30000U
 #define MOTOR_TEST_MAX_DUTY_PERCENT 30U
 #define SERVO_MIN_PULSE_US          1000U
 #define SERVO_MAX_PULSE_US          2000U
@@ -1710,13 +1708,13 @@ static bool FlightBoardTest_CheckActionReady(uint32_t duration_ms,
         (unsigned int)active_action.channel);
     return false;
   }
-  if ((duration_ms < ACTUATOR_MIN_DURATION_MS) ||
-      (duration_ms > ACTUATOR_MAX_DURATION_MS))
+  if ((duration_ms < FC_ACTUATOR_MIN_DURATION_MS) ||
+      (duration_ms > FC_ACTUATOR_MAX_DURATION_MS))
   {
     FlightBoardTest_Send(
         "FC output rejected reason=duration_range min=%u max=%u\r\n",
-        (unsigned int)ACTUATOR_MIN_DURATION_MS,
-        (unsigned int)ACTUATOR_MAX_DURATION_MS);
+        (unsigned int)FC_ACTUATOR_MIN_DURATION_MS,
+        (unsigned int)FC_ACTUATOR_MAX_DURATION_MS);
     return false;
   }
   if (uses_motor_driver &&
@@ -5425,7 +5423,11 @@ static void FlightBoardTest_HandleCommand(char *command)
     FlightBoardTest_Send(
         "FC actuator: actuator motor <1|2> <fwd|rev> <duty1..30> <ms>\r\n");
     FlightBoardTest_Send(
-        "FC actuator: actuator servo <1|2> <pulse1000..2000us> <ms>; duration=50..30000ms\r\n");
+        "FC actuator: duration_ms=%u..%u for each action\r\n",
+        (unsigned int)FC_ACTUATOR_MIN_DURATION_MS,
+        (unsigned int)FC_ACTUATOR_MAX_DURATION_MS);
+    FlightBoardTest_Send(
+        "FC actuator: actuator servo <1|2> <pulse1000..2000us> <ms>\r\n");
     FlightBoardTest_Send(
         "FC sensors: imu | imureset | imu cs | imu spi normal|slow|veryslow | "
         "imu spi mode0|mode3 | "
