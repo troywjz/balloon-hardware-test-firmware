@@ -1,7 +1,7 @@
 # 地面站检测与任务固件
 
 - 地面站硬件版本：`V1.1.0`
-- 地面站固件版本：`V1.1.0.9`
+- 地面站固件版本：`V1.1.0.10`
 - MCU：STM32F405RGT6
 
 固件保留电源 ADC、W25Q128、SD 卡和 USB CDC 板级检测，并增加与飞控
@@ -48,7 +48,7 @@ fc servo 1 1500 500
 
 远程执行器指令只有在飞控本地执行过 `actuator arm` 后才会被接受；解锁不按时间
 自动失效，保持到显式上锁、任务停止、失联保护、复位或断电。单次动作时长范围为
-50～30000 ms。地面站只负责发送请求，最终范围、模式、故障、互锁和动作定时由飞控完成。
+50～300000 ms。地面站只负责发送请求，最终范围、模式、故障、互锁和动作定时由飞控完成。
 
 每条指令会收到 ACK：
 
@@ -110,7 +110,7 @@ cmake --build --preset Debug --clean-first
 
 ```text
 build/Debug/GroundStation.hex
-build/Debug/GROUND_STATION_BOARD_TEST_V1.1.0.9.hex
+build/Debug/GROUND_STATION_BOARD_TEST_V1.1.0.10.hex
 ```
 
 ## 硬件 V1.1.0 的 TF 卡检测与只读诊断

@@ -168,7 +168,9 @@ bool BalloonRadio_EncodeCommandPayload(const BalloonCommandPayload *command,
     return false;
   }
 
-  output[0] = BALLOON_MISSION_PAYLOAD_VERSION;
+  output[0] = (command->duration_ms <= UINT16_MAX)
+                  ? BALLOON_MISSION_PAYLOAD_VERSION
+                  : BALLOON_COMMAND_PAYLOAD_VERSION_V2;
   output[1] = (uint8_t)command->code;
   BalloonRadio_WriteU16(&output[2], command->mission_id);
   BalloonRadio_WriteU32(&output[4], command->issued_ms);
@@ -176,8 +178,16 @@ bool BalloonRadio_EncodeCommandPayload(const BalloonCommandPayload *command,
   output[10] = command->channel;
   output[11] = command->flags;
   BalloonRadio_WriteU16(&output[12], command->value);
-  BalloonRadio_WriteU16(&output[14], command->duration_ms);
-  *output_length = BALLOON_COMMAND_PAYLOAD_SIZE;
+  if (command->duration_ms <= UINT16_MAX)
+  {
+    BalloonRadio_WriteU16(&output[14], (uint16_t)command->duration_ms);
+    *output_length = BALLOON_COMMAND_PAYLOAD_SIZE_V1;
+  }
+  else
+  {
+    BalloonRadio_WriteU32(&output[14], command->duration_ms);
+    *output_length = BALLOON_COMMAND_PAYLOAD_SIZE;
+  }
   return true;
 }
 
@@ -185,9 +195,24 @@ bool BalloonRadio_DecodeCommandPayload(const uint8_t *data,
                                        uint8_t length,
                                        BalloonCommandPayload *command)
 {
-  if ((data == NULL) || (command == NULL) ||
-      (length != BALLOON_COMMAND_PAYLOAD_SIZE) ||
-      (data[0] != BALLOON_MISSION_PAYLOAD_VERSION))
+  bool extended_duration;
+
+  if ((data == NULL) || (command == NULL))
+  {
+    return false;
+  }
+
+  if ((length == BALLOON_COMMAND_PAYLOAD_SIZE_V1) &&
+      (data[0] == BALLOON_MISSION_PAYLOAD_VERSION))
+  {
+    extended_duration = false;
+  }
+  else if ((length == BALLOON_COMMAND_PAYLOAD_SIZE_V2) &&
+           (data[0] == BALLOON_COMMAND_PAYLOAD_VERSION_V2))
+  {
+    extended_duration = true;
+  }
+  else
   {
     return false;
   }
@@ -199,7 +224,9 @@ bool BalloonRadio_DecodeCommandPayload(const uint8_t *data,
   command->channel = data[10];
   command->flags = data[11];
   command->value = BalloonRadio_ReadU16(&data[12]);
-  command->duration_ms = BalloonRadio_ReadU16(&data[14]);
+  command->duration_ms = extended_duration
+                             ? BalloonRadio_ReadU32(&data[14])
+                             : BalloonRadio_ReadU16(&data[14]);
   return true;
 }
 
@@ -272,25 +299,25 @@ bool BalloonRadio_EncodeTelemetryPayload(
   output[18] = telemetry->action;
   output[19] = telemetry->action_channel;
   BalloonRadio_WriteU16(&output[20], telemetry->action_value);
-  BalloonRadio_WriteU16(&output[22], telemetry->action_remaining_ms);
-  BalloonRadio_WriteU16(&output[24], telemetry->radio_rx_count);
-  BalloonRadio_WriteU16(&output[26], telemetry->radio_tx_count);
-  BalloonRadio_WriteU16(&output[28], telemetry->radio_error_count);
-  output[30] = telemetry->action_reverse ? 1U : 0U;
-  output[31] = telemetry->log_state;
-  BalloonRadio_WriteI16(&output[32], telemetry->imu_accel[0]);
-  BalloonRadio_WriteI16(&output[34], telemetry->imu_accel[1]);
-  BalloonRadio_WriteI16(&output[36], telemetry->imu_accel[2]);
-  BalloonRadio_WriteI16(&output[38], telemetry->imu_gyro[0]);
-  BalloonRadio_WriteI16(&output[40], telemetry->imu_gyro[1]);
-  BalloonRadio_WriteI16(&output[42], telemetry->imu_gyro[2]);
-  BalloonRadio_WriteI16(&output[44], telemetry->mag_onboard_mg[0]);
-  BalloonRadio_WriteI16(&output[46], telemetry->mag_onboard_mg[1]);
-  BalloonRadio_WriteI16(&output[48], telemetry->mag_onboard_mg[2]);
-  BalloonRadio_WriteI16(&output[50], telemetry->mag_external_mg[0]);
-  BalloonRadio_WriteI16(&output[52], telemetry->mag_external_mg[1]);
-  BalloonRadio_WriteI16(&output[54], telemetry->mag_external_mg[2]);
-  output[56] = telemetry->sensor_valid_flags;
+  BalloonRadio_WriteU32(&output[22], telemetry->action_remaining_ms);
+  BalloonRadio_WriteU16(&output[26], telemetry->radio_rx_count);
+  BalloonRadio_WriteU16(&output[28], telemetry->radio_tx_count);
+  BalloonRadio_WriteU16(&output[30], telemetry->radio_error_count);
+  output[32] = telemetry->action_reverse ? 1U : 0U;
+  output[33] = telemetry->log_state;
+  BalloonRadio_WriteI16(&output[34], telemetry->imu_accel[0]);
+  BalloonRadio_WriteI16(&output[36], telemetry->imu_accel[1]);
+  BalloonRadio_WriteI16(&output[38], telemetry->imu_accel[2]);
+  BalloonRadio_WriteI16(&output[40], telemetry->imu_gyro[0]);
+  BalloonRadio_WriteI16(&output[42], telemetry->imu_gyro[1]);
+  BalloonRadio_WriteI16(&output[44], telemetry->imu_gyro[2]);
+  BalloonRadio_WriteI16(&output[46], telemetry->mag_onboard_mg[0]);
+  BalloonRadio_WriteI16(&output[48], telemetry->mag_onboard_mg[1]);
+  BalloonRadio_WriteI16(&output[50], telemetry->mag_onboard_mg[2]);
+  BalloonRadio_WriteI16(&output[52], telemetry->mag_external_mg[0]);
+  BalloonRadio_WriteI16(&output[54], telemetry->mag_external_mg[1]);
+  BalloonRadio_WriteI16(&output[56], telemetry->mag_external_mg[2]);
+  output[58] = telemetry->sensor_valid_flags;
   *output_length = BALLOON_TELEMETRY_PAYLOAD_SIZE;
   return true;
 }
@@ -304,6 +331,8 @@ bool BalloonRadio_DecodeTelemetryPayload(const uint8_t *data,
          (data[0] == BALLOON_MISSION_PAYLOAD_VERSION)) ||
         ((length == BALLOON_TELEMETRY_PAYLOAD_SIZE_V2) &&
          (data[0] == BALLOON_TELEMETRY_PAYLOAD_VERSION_V2)) ||
+        ((length == BALLOON_TELEMETRY_PAYLOAD_SIZE_V3) &&
+         (data[0] == BALLOON_TELEMETRY_PAYLOAD_VERSION_V3)) ||
         ((length == BALLOON_TELEMETRY_PAYLOAD_SIZE) &&
          (data[0] == BALLOON_TELEMETRY_PAYLOAD_VERSION))))
   {
@@ -324,36 +353,57 @@ bool BalloonRadio_DecodeTelemetryPayload(const uint8_t *data,
   telemetry->action = data[18];
   telemetry->action_channel = data[19];
   telemetry->action_value = BalloonRadio_ReadU16(&data[20]);
-  telemetry->action_remaining_ms = BalloonRadio_ReadU16(&data[22]);
-  telemetry->radio_rx_count = BalloonRadio_ReadU16(&data[24]);
-  telemetry->radio_tx_count = BalloonRadio_ReadU16(&data[26]);
-  telemetry->radio_error_count = BalloonRadio_ReadU16(&data[28]);
   telemetry->payload_version = data[0];
-  if (length >= BALLOON_TELEMETRY_PAYLOAD_SIZE_V2)
+
+  if (data[0] == BALLOON_TELEMETRY_PAYLOAD_VERSION)
   {
-    telemetry->action_reverse = data[30] != 0U;
-    telemetry->log_state = data[31];
+    telemetry->action_remaining_ms = BalloonRadio_ReadU32(&data[22]);
+    telemetry->radio_rx_count = BalloonRadio_ReadU16(&data[26]);
+    telemetry->radio_tx_count = BalloonRadio_ReadU16(&data[28]);
+    telemetry->radio_error_count = BalloonRadio_ReadU16(&data[30]);
+    telemetry->action_reverse = data[32] != 0U;
+    telemetry->log_state = data[33];
+    telemetry->imu_accel[0] = BalloonRadio_ReadI16(&data[34]);
+    telemetry->imu_accel[1] = BalloonRadio_ReadI16(&data[36]);
+    telemetry->imu_accel[2] = BalloonRadio_ReadI16(&data[38]);
+    telemetry->imu_gyro[0] = BalloonRadio_ReadI16(&data[40]);
+    telemetry->imu_gyro[1] = BalloonRadio_ReadI16(&data[42]);
+    telemetry->imu_gyro[2] = BalloonRadio_ReadI16(&data[44]);
+    telemetry->mag_onboard_mg[0] = BalloonRadio_ReadI16(&data[46]);
+    telemetry->mag_onboard_mg[1] = BalloonRadio_ReadI16(&data[48]);
+    telemetry->mag_onboard_mg[2] = BalloonRadio_ReadI16(&data[50]);
+    telemetry->mag_external_mg[0] = BalloonRadio_ReadI16(&data[52]);
+    telemetry->mag_external_mg[1] = BalloonRadio_ReadI16(&data[54]);
+    telemetry->mag_external_mg[2] = BalloonRadio_ReadI16(&data[56]);
+    telemetry->sensor_valid_flags = data[58];
   }
   else
   {
-    telemetry->action_reverse = false;
-    telemetry->log_state = BALLOON_LOG_STATE_OFF;
-  }
-  if (length == BALLOON_TELEMETRY_PAYLOAD_SIZE)
-  {
-    telemetry->imu_accel[0] = BalloonRadio_ReadI16(&data[32]);
-    telemetry->imu_accel[1] = BalloonRadio_ReadI16(&data[34]);
-    telemetry->imu_accel[2] = BalloonRadio_ReadI16(&data[36]);
-    telemetry->imu_gyro[0] = BalloonRadio_ReadI16(&data[38]);
-    telemetry->imu_gyro[1] = BalloonRadio_ReadI16(&data[40]);
-    telemetry->imu_gyro[2] = BalloonRadio_ReadI16(&data[42]);
-    telemetry->mag_onboard_mg[0] = BalloonRadio_ReadI16(&data[44]);
-    telemetry->mag_onboard_mg[1] = BalloonRadio_ReadI16(&data[46]);
-    telemetry->mag_onboard_mg[2] = BalloonRadio_ReadI16(&data[48]);
-    telemetry->mag_external_mg[0] = BalloonRadio_ReadI16(&data[50]);
-    telemetry->mag_external_mg[1] = BalloonRadio_ReadI16(&data[52]);
-    telemetry->mag_external_mg[2] = BalloonRadio_ReadI16(&data[54]);
-    telemetry->sensor_valid_flags = data[56];
+    telemetry->action_remaining_ms = BalloonRadio_ReadU16(&data[22]);
+    telemetry->radio_rx_count = BalloonRadio_ReadU16(&data[24]);
+    telemetry->radio_tx_count = BalloonRadio_ReadU16(&data[26]);
+    telemetry->radio_error_count = BalloonRadio_ReadU16(&data[28]);
+    if (data[0] >= BALLOON_TELEMETRY_PAYLOAD_VERSION_V2)
+    {
+      telemetry->action_reverse = data[30] != 0U;
+      telemetry->log_state = data[31];
+    }
+    if (data[0] == BALLOON_TELEMETRY_PAYLOAD_VERSION_V3)
+    {
+      telemetry->imu_accel[0] = BalloonRadio_ReadI16(&data[32]);
+      telemetry->imu_accel[1] = BalloonRadio_ReadI16(&data[34]);
+      telemetry->imu_accel[2] = BalloonRadio_ReadI16(&data[36]);
+      telemetry->imu_gyro[0] = BalloonRadio_ReadI16(&data[38]);
+      telemetry->imu_gyro[1] = BalloonRadio_ReadI16(&data[40]);
+      telemetry->imu_gyro[2] = BalloonRadio_ReadI16(&data[42]);
+      telemetry->mag_onboard_mg[0] = BalloonRadio_ReadI16(&data[44]);
+      telemetry->mag_onboard_mg[1] = BalloonRadio_ReadI16(&data[46]);
+      telemetry->mag_onboard_mg[2] = BalloonRadio_ReadI16(&data[48]);
+      telemetry->mag_external_mg[0] = BalloonRadio_ReadI16(&data[50]);
+      telemetry->mag_external_mg[1] = BalloonRadio_ReadI16(&data[52]);
+      telemetry->mag_external_mg[2] = BalloonRadio_ReadI16(&data[54]);
+      telemetry->sensor_valid_flags = data[56];
+    }
   }
   return true;
 }

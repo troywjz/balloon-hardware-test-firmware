@@ -6,8 +6,8 @@
 
 ## 当前版本
 
-- 飞控硬件：`V1.0.5`；飞控固件：`V1.0.5.9`。
-- 地面站硬件：`V1.1.0`；地面站固件：`V1.1.0.9`。
+- 飞控硬件：`V1.0.5`；飞控固件：`V1.0.5.10`。
+- 地面站硬件：`V1.1.0`；地面站固件：`V1.1.0.10`。
 - MCU（Microcontroller Unit，微控制器）：STM32F405RGT6。
 - 串口：USB CDC（Communications Device Class，通信设备类），115200、8-N-1、CRLF。
 
@@ -45,7 +45,7 @@ SPI1 默认切换为 ICM-45686 官方驱动采用的 Mode3，同时保留 Mode0 
    正确接入电池侧电源。
 4. 执行器上电后一次只测试一路，首次测试卸除机械负载并从短时间、低占空比开始。
 5. 飞控执行器本地解锁没有自动超时，但任务停止、失联保护、复位和断电都会撤销解锁。
-6. 单次执行器动作允许 `50～30000 ms`；空心杯电机占空比仅允许 `1%～30%`。
+6. 单次执行器动作允许 `50～300000 ms`；空心杯电机占空比仅允许 `1%～30%`。
 7. `test` 是无执行器、无射频发射的综合检测命令。
 
 ## 可直接烧录的文件
@@ -53,15 +53,15 @@ SPI1 默认切换为 ICM-45686 官方驱动采用的 Mode3，同时保留 Mode0 
 飞控：
 
 ```text
-FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.5.7.hex
-FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.5.7.bin
+FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.5.10.hex
+FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.5.10.bin
 ```
 
 地面站：
 
 ```text
-ground-station/build/Debug/GROUND_STATION_BOARD_TEST_V1.1.0.9.hex
-ground-station/build/Debug/GROUND_STATION_BOARD_TEST_V1.1.0.9.bin
+ground-station/build/Debug/GROUND_STATION_BOARD_TEST_V1.1.0.10.hex
+ground-station/build/Debug/GROUND_STATION_BOARD_TEST_V1.1.0.10.bin
 ```
 
 同一目录保留不带版本号的通用别名。HEX（Intel HEX，英特尔十六进制）适合通过
@@ -142,11 +142,11 @@ actuator arm
 | 命令 | 参数和作用 |
 |---|---|
 | `actuator status` | 查看是否解锁、当前动作和剩余时间 |
-| `actuator valve <通道> <时长ms>` | 通道为 1 或 2；打开指定电磁阀 50～30000 ms，到时自动关闭 |
+| `actuator valve <通道> <时长ms>` | 通道为 1 或 2；打开指定电磁阀 50～300000 ms，到时自动关闭 |
 | `actuator group <1\|2> <intake\|exhaust> <时长ms>` | 组1=XH1泵1+XH3阀2；组2=XH2泵2+XH4阀1；同时开阀并正/反向运行泵 |
-| `actuator pump <通道> <方向> <时长ms>` | 通道为 1 或 2；方向为 `fwd` 或 `rev`；运行 50～30000 ms |
-| `actuator motor <通道> <方向> <占空比%> <时长ms>` | 通道为 1 或 2；方向为 `fwd` 或 `rev`；占空比 1%～30%；运行 50～30000 ms |
-| `actuator servo <通道> <脉宽us> <时长ms>` | 通道为 1 或 2；脉宽 1000～2000 us；保持 50～30000 ms |
+| `actuator pump <通道> <方向> <时长ms>` | 通道为 1 或 2；方向为 `fwd` 或 `rev`；运行 50～300000 ms |
+| `actuator motor <通道> <方向> <占空比%> <时长ms>` | 通道为 1 或 2；方向为 `fwd` 或 `rev`；占空比 1%～30%；运行 50～300000 ms |
+| `actuator servo <通道> <脉宽us> <时长ms>` | 通道为 1 或 2；脉宽 1000～2000 us；保持 50～300000 ms |
 | `actuator stop` | 立即停止当前动作并上锁 |
 | `actuator disarm` | 与 `actuator stop` 相同，立即停止并上锁 |
 
@@ -248,10 +248,10 @@ actuator valve 1 3000
 |---|---|
 | `fc status` | 请求一帧飞控状态遥测，不要求执行器解锁 |
 | `fc stop` | 远程急停当前执行器并撤销飞控本地解锁 |
-| `fc valve <通道> <时长ms>` | 通道为 1 或 2；远程打开指定电磁阀 50～30000 ms |
-| `fc pump <通道> <方向> <时长ms>` | 通道为 1 或 2；方向为 `fwd` 或 `rev`；远程运行 50～30000 ms |
-| `fc motor <通道> <方向> <占空比%> <时长ms>` | 通道为 1 或 2；方向为 `fwd` 或 `rev`；占空比 1%～30%；远程运行 50～30000 ms |
-| `fc servo <通道> <脉宽us> <时长ms>` | 通道为 1 或 2；脉宽 1000～2000 us；远程保持 50～30000 ms |
+| `fc valve <通道> <时长ms>` | 通道为 1 或 2；远程打开指定电磁阀 50～300000 ms |
+| `fc pump <通道> <方向> <时长ms>` | 通道为 1 或 2；方向为 `fwd` 或 `rev`；远程运行 50～300000 ms |
+| `fc motor <通道> <方向> <占空比%> <时长ms>` | 通道为 1 或 2；方向为 `fwd` 或 `rev`；占空比 1%～30%；远程运行 50～300000 ms |
+| `fc servo <通道> <脉宽us> <时长ms>` | 通道为 1 或 2；脉宽 1000～2000 us；远程保持 50～300000 ms |
 
 示例：
 

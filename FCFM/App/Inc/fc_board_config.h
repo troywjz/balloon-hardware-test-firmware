@@ -10,15 +10,15 @@
 
 /* Firmware version reported by the version command. */
 /* 版本命令输出的固件版本。 */
-#define FC_FIRMWARE_VERSION       "V1.0.5.9"
+#define FC_FIRMWARE_VERSION       "V1.0.5.10"
 
 /* Minimum allowed duration of one actuator action, in milliseconds. */
 /* 单次执行器动作允许的最短时长，单位为毫秒。 */
 #define FC_ACTUATOR_MIN_DURATION_MS 50U
 
-/* Maximum allowed duration of one actuator action, in milliseconds. */
-/* 单次执行器动作允许的最长时长，单位为毫秒。 */
-#define FC_ACTUATOR_MAX_DURATION_MS 30000U
+/* Maximum duration of one actuator action, in milliseconds (five minutes). */
+/* 单次执行器动作最长时长，单位为毫秒（5 分钟）。 */
+#define FC_ACTUATOR_MAX_DURATION_MS 300000U
 
 /* I2C (Inter-Integrated Circuit) multiplexer channel indices. */
 /* I2C（集成电路间总线）多路复用器通道索引。 */

@@ -1,7 +1,7 @@
 # FCFM 飞控检测与任务固件
 
 - 飞控硬件版本：`V1.0.5`
-- 飞控固件版本：`V1.0.5.9`
+- 飞控固件版本：`V1.0.5.10`
 - MCU：STM32F405RGT6
 
 固件继续保留 ADC、IMU、I²C/TCA9548、GNSS、SDIO、两个阀、两个泵、两个
@@ -144,7 +144,7 @@ PA4 使用推挽输出，MCU 内部不启用上拉；外部 R55 继续提供 CS 
 
 以下测试只在 `maintenance` 模式进行，建议先只连接 USB，断开执行器和电池侧负载：
 
-1. 发送 `version`，确认固件为 `V1.0.5.9`；上电启动输出会先显示一次 `boot_init`，
+1. 发送 `version`，确认固件为 `V1.0.5.10`；上电启动输出会先显示一次 `boot_init`，
    也可发送 `imu stop` 停止连续诊断。
 2. 万用表置直流电压档，黑表笔接 GND，分别测 C12 两端中非 GND 端和 C13 两端中非
    GND 端；两路都应约为 3.3 V。不要直接给 LGA 焊盘加力。
@@ -195,7 +195,7 @@ actuator arm
 ```
 
 解锁后不再按时间自动失效，保持到执行 `actuator stop`、`actuator disarm`、任务停止、
-失联保护、复位或断电为止。一次只允许一个执行器动作，每次动作限制为 50～30000 ms，
+失联保护、复位或断电为止。一次只允许一个执行器动作，每次动作限制为 50～300000 ms，
 空心杯电机占空比限制为 1%～30%。
 
 执行器动作的最短和最长时长统一配置在 `App/Inc/fc_board_config.h`，飞控本地、飞控远程
@@ -237,7 +237,7 @@ actuator group stop
 actuator disarm
 ```
 
-时长限制为 50～30000 ms。`inhale`/`exhale`、`fwd`/`rev` 可分别作为
+时长限制为 50～300000 ms。`inhale`/`exhale`、`fwd`/`rev` 可分别作为
 `intake`/`exhaust` 的兼容别名。首次测试应卸除机械负载，确认实际充排气方向；若
 方向与逻辑相反，只需调整 `PUMP1_FORWARD_INVERTED` 或 `PUMP2_FORWARD_INVERTED`，
 不需要修改引脚连接。
@@ -283,10 +283,10 @@ SX1281 芯片功率设置为最低档 `-18 dBm`，但 E28 外部 PA 后的实际
 ```text
 fc status
 fc stop
-fc valve <1|2> <50..30000ms>
-fc pump <1|2> <fwd|rev> <50..30000ms>
-fc motor <1|2> <fwd|rev> <1..30%> <50..30000ms>
-fc servo <1|2> <1000..2000us> <50..30000ms>
+fc valve <1|2> <50..300000ms>
+fc pump <1|2> <fwd|rev> <50..300000ms>
+fc motor <1|2> <fwd|rev> <1..30%> <50..300000ms>
+fc servo <1|2> <1000..2000us> <50..300000ms>
 ```
 
 每条指令包含任务号、序号、地面发送时刻、有效期和 CRC16。飞控拒绝重复/旧序号、
@@ -367,7 +367,7 @@ cmake --build --preset Debug --clean-first
 烧录文件：
 
 ```text
-build/Debug/FCFM_BOARD_TEST_V1.0.5.9.hex
+build/Debug/FCFM_BOARD_TEST_V1.0.5.10.hex
 ```
 
 如果使用 CubeMX 重新生成代码，必须确认 PB12 `SPI2_CS_RADIO` 初始输出为低，且

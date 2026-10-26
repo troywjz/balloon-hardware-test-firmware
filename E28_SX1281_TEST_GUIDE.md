@@ -25,8 +25,8 @@
 成功后烧录：
 
 ```text
-飞控：build\Debug\FCFM_BOARD_TEST_V1.0.2.10.hex
-地面站：build\Debug\GROUND_STATION_BOARD_TEST_V1.1.0.8.hex
+飞控：build\Debug\FCFM_BOARD_TEST_V1.0.5.10.hex
+地面站：build\Debug\GROUND_STATION_BOARD_TEST_V1.1.0.10.hex
 ```
 
 使用 STM32CubeProgrammer：连接方式选“USB”→“连接”→“擦除和编程”→选择 HEX →
@@ -128,7 +128,7 @@ fc servo 1 1500 500
 
 正常动作指令先返回 `started`，动作到时关闭后返回 `completed`。未本地解锁、范围
 错误、重复、过期、链路失效或执行器忙时返回 `rejected` 和明确原因。
-飞控本地解锁不按时间自动失效，单次动作允许 50～30000 ms；结束测试应执行
+飞控本地解锁不按时间自动失效，单次动作允许 50～300000 ms；结束测试应执行
 `fc stop` 或飞控本地 `actuator disarm`，使输出停止并重新上锁。
 
 9. 结束任务：

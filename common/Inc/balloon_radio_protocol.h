@@ -9,13 +9,18 @@
 #define BALLOON_RADIO_MAX_PAYLOAD      64U
 #define BALLOON_RADIO_FRAME_OVERHEAD   10U
 #define BALLOON_MISSION_PAYLOAD_VERSION 1U
+#define BALLOON_COMMAND_PAYLOAD_VERSION_V2 2U
 #define BALLOON_TELEMETRY_PAYLOAD_VERSION_V2 2U
-#define BALLOON_TELEMETRY_PAYLOAD_VERSION 3U
+#define BALLOON_TELEMETRY_PAYLOAD_VERSION_V3 3U
+#define BALLOON_TELEMETRY_PAYLOAD_VERSION 4U
 #define BALLOON_TELEMETRY_PAYLOAD_SIZE_V1 30U
 #define BALLOON_TELEMETRY_PAYLOAD_SIZE_V2 32U
-#define BALLOON_COMMAND_PAYLOAD_SIZE    16U
+#define BALLOON_TELEMETRY_PAYLOAD_SIZE_V3 57U
+#define BALLOON_COMMAND_PAYLOAD_SIZE_V1  16U
+#define BALLOON_COMMAND_PAYLOAD_SIZE_V2  18U
+#define BALLOON_COMMAND_PAYLOAD_SIZE    BALLOON_COMMAND_PAYLOAD_SIZE_V2
 #define BALLOON_ACK_PAYLOAD_SIZE        12U
-#define BALLOON_TELEMETRY_PAYLOAD_SIZE  57U
+#define BALLOON_TELEMETRY_PAYLOAD_SIZE  59U
 #define BALLOON_RADIO_MAX_FRAME_SIZE   \
   (BALLOON_RADIO_MAX_PAYLOAD + BALLOON_RADIO_FRAME_OVERHEAD)
 
@@ -103,7 +108,7 @@ typedef struct
   uint8_t channel;
   uint8_t flags;
   uint16_t value;
-  uint16_t duration_ms;
+  uint32_t duration_ms;
 } BalloonCommandPayload;
 
 typedef struct
@@ -133,7 +138,7 @@ typedef struct
   uint8_t action;
   uint8_t action_channel;
   uint16_t action_value;
-  uint16_t action_remaining_ms;
+  uint32_t action_remaining_ms;
   uint16_t radio_rx_count;
   uint16_t radio_tx_count;
   uint16_t radio_error_count;

@@ -4365,8 +4365,8 @@ static void FlightBoardTest_FillTelemetry(BalloonTelemetryPayload *telemetry)
   telemetry->action = (uint8_t)active_action.type;
   telemetry->action_channel = active_action.channel;
   telemetry->action_value = FlightBoardTest_SaturateU16(active_action.value);
-  telemetry->action_remaining_ms = FlightBoardTest_SaturateU16(
-      FlightBoardTest_RemainingMs(active_action.deadline));
+  telemetry->action_remaining_ms =
+      FlightBoardTest_RemainingMs(active_action.deadline);
   telemetry->radio_rx_count = FlightBoardTest_SaturateU16(radio.rx_count);
   telemetry->radio_tx_count = FlightBoardTest_SaturateU16(radio.tx_count);
   telemetry->radio_error_count = FlightBoardTest_SaturateU16(radio.error_count);
@@ -5440,11 +5440,12 @@ static void FlightBoardTest_HandleCommand(char *command)
   else if (strcmp(command, "version") == 0)
   {
     FlightBoardTest_Send(
-        "FC hardware=%s firmware=%s mode=%s command_payload_v=%u telemetry_payload_v=%u radio_tx=locked_default radio_dio3=disabled_grounded\r\n",
+        "FC hardware=%s firmware=%s mode=%s mission_payload_v=%u command_extended_v=%u telemetry_payload_v=%u radio_tx=locked_default radio_dio3=disabled_grounded\r\n",
         BOARD_HARDWARE_VERSION,
         BOARD_FIRMWARE_VERSION,
         BalloonRadio_SystemModeName(system_mode),
         (unsigned int)BALLOON_MISSION_PAYLOAD_VERSION,
+        (unsigned int)BALLOON_COMMAND_PAYLOAD_VERSION_V2,
         (unsigned int)BALLOON_TELEMETRY_PAYLOAD_VERSION);
   }
   else if (strcmp(command, "status") == 0)

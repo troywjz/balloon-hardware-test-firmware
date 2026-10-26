@@ -31,7 +31,7 @@
 #define USB_RX_QUEUE_SIZE           256U
 #define RADIO_TX_ARM_TIMEOUT_MS     60000U
 #define GROUND_HARDWARE_VERSION     "V1.1.0"
-#define GROUND_FIRMWARE_VERSION     "V1.1.0.9"
+#define GROUND_FIRMWARE_VERSION     "V1.1.0.10"
 #define MISSION_ID                  1U
 #define MISSION_COMMAND_TTL_MS      2000U
 #define MISSION_HEARTBEAT_PERIOD_MS 2000U
@@ -99,7 +99,7 @@ typedef struct
   uint8_t channel;
   uint16_t sequence;
   uint16_t value;
-  uint16_t duration_ms;
+  uint32_t duration_ms;
   uint8_t action;
   uint8_t action_channel;
   int8_t rssi_dbm;
@@ -125,7 +125,7 @@ typedef struct
   } payload;
 } GroundStationLogRecord;
 
-_Static_assert(sizeof(GroundStationLogRecord) <= 72U,
+_Static_assert(sizeof(GroundStationLogRecord) <= 76U,
                "GroundStationLogRecord must remain queue friendly");
 
 static volatile uint16_t usb_rx_head;
@@ -168,7 +168,7 @@ static void GroundStation_LogEvent(GroundStationLogEventKind event,
                                    uint8_t flags,
                                    uint8_t channel,
                                    uint16_t value,
-                                   uint16_t duration_ms,
+                                   uint32_t duration_ms,
                                    int8_t rssi_dbm,
                                    int8_t snr_db);
 static void GroundStation_LogTelemetry(const BalloonTelemetryPayload *telemetry,
@@ -545,7 +545,7 @@ static void GroundStation_HandleRadioPacket(const E28Sx1281Packet *packet)
     GroundStation_Send(
         "GS telemetry seq=%u telemetry_v=%u mission=%u mode=%s tick_ms=%lu fault=0x%04X "
         "vbat_mv=%u adc=%u imu=%02X/%u sd=%u link=%u "
-        "action=%u ch=%u direction=%s value=%u remain_ms=%u radio_rx/tx/err=%u/%u/%u "
+        "action=%u ch=%u direction=%s value=%u remain_ms=%lu radio_rx/tx/err=%u/%u/%u "
         "fc_log=%s rssi_dbm=%d snr_db=%d\r\n",
         (unsigned int)frame.sequence,
         (unsigned int)telemetry.payload_version,
@@ -566,14 +566,14 @@ static void GroundStation_HandleRadioPacket(const E28Sx1281Packet *packet)
                                             telemetry.action_reverse)
             : "unknown",
         (unsigned int)telemetry.action_value,
-        (unsigned int)telemetry.action_remaining_ms,
+        (unsigned long)telemetry.action_remaining_ms,
         (unsigned int)telemetry.radio_rx_count,
         (unsigned int)telemetry.radio_tx_count,
         (unsigned int)telemetry.radio_error_count,
         GroundStation_TelemetryLogState(&telemetry),
         packet->rssi_dbm,
         packet->snr_db);
-    if (telemetry.payload_version >= BALLOON_TELEMETRY_PAYLOAD_VERSION)
+    if (telemetry.payload_version >= BALLOON_TELEMETRY_PAYLOAD_VERSION_V3)
     {
       GroundStation_Send(
           "GS sensors seq=%u valid=0x%02X imu_raw=%d/%d/%d,%d/%d/%d "
@@ -939,7 +939,7 @@ static void GroundStation_LogEvent(GroundStationLogEventKind event,
                                    uint8_t flags,
                                    uint8_t channel,
                                    uint16_t value,
-                                   uint16_t duration_ms,
+                                   uint32_t duration_ms,
                                    int8_t rssi_dbm,
                                    int8_t snr_db)
 {
@@ -1219,7 +1219,7 @@ static void GroundStation_LoggerTask(void *argument)
       length = snprintf(
           mission_csv_line,
           sizeof(mission_csv_line),
-          "1,%lu,%lu,%s,%s,%s,%s,%u,0x%02X,%u,%s,%u,%u,%d,%d\r\n",
+          "1,%lu,%lu,%s,%s,%s,%s,%u,0x%02X,%u,%s,%u,%lu,%d,%d\r\n",
           (unsigned long)mission_event_log_sequence,
           (unsigned long)record.timestamp_ms,
           GroundStation_LogEventName(event->event),
@@ -1240,7 +1240,7 @@ static void GroundStation_LoggerTask(void *argument)
                     (event->flags & 0x01U) != 0U)
               : "na",
           (unsigned int)event->value,
-          (unsigned int)event->duration_ms,
+          (unsigned long)event->duration_ms,
           event->rssi_dbm,
           event->snr_db);
       if ((length <= 0) || ((size_t)length >= sizeof(mission_csv_line)) ||
@@ -1928,7 +1928,7 @@ static bool GroundStation_SendMissionCommand(BalloonCommandCode code,
                                              uint8_t channel,
                                              uint8_t flags,
                                              uint16_t value,
-                                             uint16_t duration_ms)
+                                             uint32_t duration_ms)
 {
   BalloonCommandPayload command = {0};
   uint8_t payload[BALLOON_COMMAND_PAYLOAD_SIZE];
@@ -2169,11 +2169,12 @@ static void GroundStation_HandleCommand(char *command, GroundStationStatus *stat
   else if (strcmp(command, "version") == 0)
   {
     GroundStation_Send(
-        "GS hardware=%s firmware=%s mission=%u command_payload_v=%u telemetry_accept=v1/v2/v3\r\n",
+        "GS hardware=%s firmware=%s mission=%u mission_payload_v=%u command_extended_v=%u telemetry_accept=v1/v2/v3/v4\r\n",
                        GROUND_HARDWARE_VERSION,
                        GROUND_FIRMWARE_VERSION,
                        mission_active ? 1U : 0U,
-                       (unsigned int)BALLOON_MISSION_PAYLOAD_VERSION);
+                       (unsigned int)BALLOON_MISSION_PAYLOAD_VERSION,
+                       (unsigned int)BALLOON_COMMAND_PAYLOAD_VERSION_V2);
   }
   else if (strcmp(command, "status") == 0)
   {
@@ -2223,7 +2224,7 @@ static void GroundStation_HandleCommand(char *command, GroundStationStatus *stat
           (uint8_t)channel,
           0U,
           0U,
-          (uint16_t)duration_ms);
+          (uint32_t)duration_ms);
     }
   }
   else if ((fields = sscanf(command,
@@ -2256,7 +2257,7 @@ static void GroundStation_HandleCommand(char *command, GroundStationStatus *stat
           (uint8_t)channel,
           reverse ? 1U : 0U,
           0U,
-          (uint16_t)duration_ms);
+          (uint32_t)duration_ms);
     }
   }
   else if ((fields = sscanf(command,
@@ -2291,7 +2292,7 @@ static void GroundStation_HandleCommand(char *command, GroundStationStatus *stat
           (uint8_t)channel,
           reverse ? 1U : 0U,
           (uint16_t)value,
-          (uint16_t)duration_ms);
+          (uint32_t)duration_ms);
     }
   }
   else if ((fields = sscanf(command,
@@ -2318,7 +2319,7 @@ static void GroundStation_HandleCommand(char *command, GroundStationStatus *stat
           (uint8_t)channel,
           0U,
           (uint16_t)value,
-          (uint16_t)duration_ms);
+          (uint32_t)duration_ms);
     }
   }
   else if (strcmp(command, "adc") == 0)
