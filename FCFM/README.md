@@ -1,15 +1,15 @@
 # FCFM 飞控检测与任务固件
 
 - 飞控硬件版本：`V1.0.5`
-- 飞控固件版本：`V1.0.5.10`
+- 飞控固件版本：`V1.0.5.11`
 - MCU：STM32F405RGT6
 
 固件继续保留 ADC、IMU、I²C/TCA9548、GNSS、SDIO、两个阀、两个泵、两个
 空心杯电机和两个舵机的原板级测试能力，并增加 E28-2G4M20SX（SX1281）正式
 任务通信。射频功能没有替换或删除原来的传感器、存储和执行器功能。
 
-上电默认进入 `maintenance`（维护）模式：执行器锁定、E28 硬件复位、不主动发射，
-也不周期刷屏。USB CDC 命令使用 CRLF 结尾。
+上电默认进入 `maintenance`（维护）模式：执行器锁定、E28 硬件复位、不主动发射。
+默认每秒输出一次环境传感器读数，可在板级配置中关闭。USB CDC 命令使用 CRLF 结尾。
 
 ## 简化命令
 
@@ -43,7 +43,7 @@ test
 4. E28 安全状态和无发射 SPI 探测。
 5. ICM-45686 复位、WHO_AM_I 和六轴原始数据探测。
 6. I²C 上游及 TCA9548 八个下游通道扫描。
-7. 按原理图映射读取 SH1、SH2、SH3 上的三颗 BMP580，计算相对 SH1 的
+7. 按配置读取 SH1 内囊、SH2 外囊、SH3 外界气压，计算相对外界的
    压差，读取 SH4 上的 SHT40 温湿度，并分别读取 TCA9548 ch4/ch5 上的
    板载和外接 MMC5983MA。
 8. USART6 GNSS 1000 ms 数据捕获。
@@ -83,15 +83,42 @@ sensors all
 `baro <0..7>` 会自动识别两代传感器。BMP3 系列读取出厂校准参数并使用 Bosch
 整数补偿；BMP58x 输出已经在芯片内部线性化，固件按数据手册比例换算。命令打印
 24 位原始值、摄氏温度和 Pa 气压，随后让传感器回到待机/睡眠模式并关闭 TCA9548
-下游通道。`baro all` 固定按 `SH1/ch0=BMP580`、`SH2/ch1=BMP580`、
-`SH3/ch2=BMP580` 依次测试，并输出相对 SH1 的压差。
+下游通道。`baro all` 按配置依次测试内囊、外囊和环境气压计，支持上述两代
+传感器，并以环境气压为基准输出汇总压差。
 
 `sht40` 固定读取 `SH4/ch3` 上地址 `0x44` 或 `0x45` 的 SHT40，使用无加热高精度
 测量命令，校验两段 CRC-8（Cyclic Redundancy Check，循环冗余校验）后输出温度和
 相对湿度。`mag onboard` 和 `mag external` 分别读取 `ch4`、`ch5` 上地址 `0x30`
 的 MMC5983MA；驱动每次只允许一个 TCA9548 通道导通，完成或失败后都会关闭全部
-下游通道。`sensors all` 会依次执行三颗 BMP580、一颗 SHT40 和两颗 MMC5983MA
+下游通道。`sensors all` 会依次执行三颗气压计、一颗 SHT40 和两颗 MMC5983MA
 的集中测试；`test` 中的环境传感器步骤也使用相同映射。
+
+### 环境读数实时输出
+
+`App/Inc/fc_board_config.h` 中的 `FC_ENVIRONMENT_STREAM_ENABLED` 默认为 `1U`，
+设为 `0U` 可关闭；修改后需重新生成并烧录。`FC_ENVIRONMENT_STREAM_PERIOD_MS`
+默认为 `1000U`，单位为毫秒。默认通道是 SH1/ch0 内囊、SH2/ch1 外囊、
+SH3/ch2 外界、SH4/ch3 SHT40；如实际接线改变，修改同一配置文件中的通道。
+
+正常输出示例（数值仅为示例）：
+
+```text
+FC env temperature_c=20.01 humidity_rh=49.18 altitude_m=336.8 ambient_kpa=97.344 outer_kpa=97.243 outer_minus_ambient_kpa=-0.101 inner_kpa=97.245 inner_minus_outer_kpa=0.002 age_ms=150
+```
+
+气压及压差单位为 kPa（kilopascal，千帕），保留三位小数；外囊压差为外囊减
+外界，内囊压差为内囊减外囊。显示的压差是未做零点校准的两个绝对压力之差，
+不同传感器的偏差会影响结果。`age_ms` 表示从本轮采样开始至输出的时间；
+传感器读取失败或样本超过两个输出周期时，受影响字段显示 `NA`。
+
+海拔是根据外界气压和标准大气模型估算的气压高度，不是卫星定位海拔。
+`FC_ENVIRONMENT_SEA_LEVEL_PRESSURE_PA` 默认为 `101325U` 帕，可改为所需的海平面
+参考气压；天气与参考气压误差会影响高度。当前气压驱动仅把 30000～125000 Pa、
+-40～85 °C 的气压计读数作为有效值，超出范围时相关字段为 `NA`。
+
+采样与主控制任务分开，串口忙或射频发射期间可能跳过一次输出。手动 I²C 命令
+若碰到采样占用，会返回 `FC i2c busy reason=environment_sampling retry=1`，
+稍后重发即可。实时输出仅用于观察，不会设置压力上限或自动停止执行器。
 
 `mag stream [onboard|external|all]` 每 500 ms 输出传感器缓存中的原始计数和 mG
 数据，适合移动磁铁或旋转传感器观察数值是否变化；默认使用 `all`，发送 `mag stop`
@@ -144,7 +171,7 @@ PA4 使用推挽输出，MCU 内部不启用上拉；外部 R55 继续提供 CS 
 
 以下测试只在 `maintenance` 模式进行，建议先只连接 USB，断开执行器和电池侧负载：
 
-1. 发送 `version`，确认固件为 `V1.0.5.10`；上电启动输出会先显示一次 `boot_init`，
+1. 发送 `version`，确认固件为 `V1.0.5.11`；上电启动输出会先显示一次 `boot_init`，
    也可发送 `imu stop` 停止连续诊断。
 2. 万用表置直流电压档，黑表笔接 GND，分别测 C12 两端中非 GND 端和 C13 两端中非
    GND 端；两路都应约为 3.3 V。不要直接给 LGA 焊盘加力。
@@ -344,7 +371,7 @@ GNSS 位置、压力、温度和电流等字段要在对应传感器驱动、单
 - 空心杯电机1：TIM3 CH3/CH4，PB0/PB1。
 - 空心杯电机2：TIM3 CH1/CH2，PB4/PB5。
 - 舵机1/舵机2：TIM2 CH1/CH2，PA0/PA1，50 Hz。
-- I²C 复用器：ch0～ch2 为三颗 BMP580，ch3 为 SHT40，ch4 为板载
+- I²C 复用器：ch0、ch1、ch2 分别为内囊、外囊和环境气压计，ch3 为 SHT40，ch4 为板载
   MMC5983MA，ch5 为外接 MMC5983MA。
 - E28：只使用 DIO1 中断。V1.0.5 的 DIO3 已接地，固件把 DIO2/DIO3 IRQ 掩码
   固定为 0，不读取或配置 DIO3。
@@ -367,7 +394,7 @@ cmake --build --preset Debug --clean-first
 烧录文件：
 
 ```text
-build/Debug/FCFM_BOARD_TEST_V1.0.5.10.hex
+build/Debug/FCFM_BOARD_TEST_V1.0.5.11.hex
 ```
 
 如果使用 CubeMX 重新生成代码，必须确认 PB12 `SPI2_CS_RADIO` 初始输出为低，且

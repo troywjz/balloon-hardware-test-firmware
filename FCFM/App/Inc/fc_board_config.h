@@ -10,7 +10,7 @@
 
 /* Firmware version reported by the version command. */
 /* 版本命令输出的固件版本。 */
-#define FC_FIRMWARE_VERSION       "V1.0.5.10"
+#define FC_FIRMWARE_VERSION       "V1.0.5.11"
 
 /* Minimum allowed duration of one actuator action, in milliseconds. */
 /* 单次执行器动作允许的最短时长，单位为毫秒。 */
@@ -20,20 +20,32 @@
 /* 单次执行器动作最长时长，单位为毫秒（5 分钟）。 */
 #define FC_ACTUATOR_MAX_DURATION_MS 300000U
 
+/* Enable the once-per-second environmental display: 1 enables it, 0 disables it. */
+/* 每秒环境数据显示开关：1 开启，0 关闭。 */
+#define FC_ENVIRONMENT_STREAM_ENABLED 1U
+
+/* Environmental display interval in milliseconds. */
+/* 环境数据显示间隔，单位为毫秒。 */
+#define FC_ENVIRONMENT_STREAM_PERIOD_MS 1000U
+
+/* Sea-level reference pressure for the standard-atmosphere altitude, in pascals. */
+/* 标准大气气压高度使用的海平面参考气压，单位为帕。 */
+#define FC_ENVIRONMENT_SEA_LEVEL_PRESSURE_PA 101325U
+
 /* I2C (Inter-Integrated Circuit) multiplexer channel indices. */
 /* I2C（集成电路间总线）多路复用器通道索引。 */
 
-/* SH1 ambient-pressure BMP580 sensor channel. */
-/* SH1 外界大气压 BMP580 传感器通道。 */
-#define FC_I2C_MUX_CHANNEL_BARO_1       0U
+/* SH1 inner-balloon pressure sensor channel. */
+/* SH1 内囊气压传感器通道。 */
+#define FC_I2C_MUX_CHANNEL_BARO_INNER   0U
 
-/* SH2 helium-lift-bag BMP580 sensor channel. */
-/* SH2 氦气升力囊 BMP580 传感器通道。 */
-#define FC_I2C_MUX_CHANNEL_BARO_2       1U
+/* SH2 outer-balloon pressure sensor channel. */
+/* SH2 外囊气压传感器通道。 */
+#define FC_I2C_MUX_CHANNEL_BARO_OUTER   1U
 
-/* SH3 air-ballast-bag BMP580 sensor channel. */
-/* SH3 空气压载囊 BMP580 传感器通道。 */
-#define FC_I2C_MUX_CHANNEL_BARO_3       2U
+/* SH3 ambient-pressure sensor channel. */
+/* SH3 外界大气压传感器通道。 */
+#define FC_I2C_MUX_CHANNEL_BARO_AMBIENT 2U
 
 /* SH4 SHT40 temperature and humidity sensor channel. */
 /* SH4 SHT40 温湿度传感器通道。 */

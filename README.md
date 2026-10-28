@@ -6,7 +6,7 @@
 
 ## 当前版本
 
-- 飞控硬件：`V1.0.5`；飞控固件：`V1.0.5.10`。
+- 飞控硬件：`V1.0.5`；飞控固件：`V1.0.5.11`。
 - 地面站硬件：`V1.1.0`；地面站固件：`V1.1.0.10`。
 - MCU（Microcontroller Unit，微控制器）：STM32F405RGT6。
 - 串口：USB CDC（Communications Device Class，通信设备类），115200、8-N-1、CRLF。
@@ -53,8 +53,8 @@ SPI1 默认切换为 ICM-45686 官方驱动采用的 Mode3，同时保留 Mode0 
 飞控：
 
 ```text
-FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.5.10.hex
-FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.5.10.bin
+FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.5.11.hex
+FCFM/build/Debug/FCFM_BOARD_TEST_V1.0.5.11.bin
 ```
 
 地面站：
@@ -115,21 +115,24 @@ I²C 是 Inter-Integrated Circuit，两线串行总线。飞控通过 TCA9548 �
 | `i2c mux <0..7>` | 选择并扫描指定通道 |
 | `i2c diag <0..7>` | 对指定通道执行多速率、总线电平和气压计地址诊断 |
 | `baro <0..7>` | 自动识别并读取指定通道的 BMP3/BMP58x 气压计 |
-| `baro all` | 读取 SH1、SH2、SH3 三颗 BMP580，并计算 SH2/SH3 相对 SH1 的压差 |
+| `baro all` | 按配置读取内囊、外囊和环境气压计，并以环境气压为基准输出压差 |
 | `sht40` | 读取 SH4 上的 SHT40 温度和相对湿度 |
 | `mag onboard` / `mag external` / `mag all` | 读取 TCA9548 ch4 板载和 ch5/SH7 外接 MMC5983MA 的 Product ID 与三轴磁场 |
 | `mag stream [onboard|external|all]` | 每500 ms输出板载/外接磁力计缓存的原始值和 mG 值，`mag stop`停止 |
 | `imu i2c diag` | 临时将 SPI1 引脚切为软件I²C，测试ICM-45686的0x68/0x69地址和WHO_AM_I；结束后恢复SPI |
-| `sensors all` | 集中执行三颗 BMP580 和一颗 SHT40 的读取 |
+| `sensors all` | 集中读取三颗气压计、一颗 SHT40 和两颗磁力计 |
 
 当前固定映射：
 
 | 接口 | 通道 | 模块 | 建议对象 |
 |---|---:|---|---|
-| SH1 | 0 | BMP580 | 外界大气，压差基准 |
-| SH2 | 1 | BMP580 | 氦气升力囊 |
-| SH3 | 2 | BMP580 | 空气压载囊 |
+| SH1 | 0 | BMP58x | 内囊气压 |
+| SH2 | 1 | BMP58x | 外囊气压 |
+| SH3 | 2 | BMP388/BMP390/BMP58x | 外界大气，压差基准 |
 | SH4 | 3 | SHT40 | 外界温湿度 |
+
+环境读数默认每秒通过飞控串口输出，开关、周期和海平面参考气压在
+`FCFM/App/Inc/fc_board_config.h` 中设置；详情和输出字段见 `FCFM/README.md`。
 
 ### 执行器命令
 
