@@ -9,7 +9,7 @@
 任务通信。射频功能没有替换或删除原来的传感器、存储和执行器功能。
 
 上电默认进入 `maintenance`（维护）模式：执行器锁定、E28 硬件复位、不主动发射。
-默认每秒输出一次环境传感器读数，可在板级配置中关闭。USB CDC 命令使用 CRLF 结尾。
+默认每 5 秒输出一次环境传感器读数，可在板级配置中关闭。USB CDC 命令使用 CRLF 结尾。
 
 ## 简化命令
 
@@ -97,7 +97,7 @@ sensors all
 
 `App/Inc/fc_board_config.h` 中的 `FC_ENVIRONMENT_STREAM_ENABLED` 默认为 `1U`，
 设为 `0U` 可关闭；修改后需重新生成并烧录。`FC_ENVIRONMENT_STREAM_PERIOD_MS`
-默认为 `1000U`，单位为毫秒。默认通道是 SH1/ch0 内囊、SH2/ch1 外囊、
+默认为 `5000U`，单位为毫秒。默认通道是 SH1/ch0 内囊、SH2/ch1 外囊、
 SH3/ch2 外界、SH4/ch3 SHT40；如实际接线改变，修改同一配置文件中的通道。
 
 正常输出示例（数值仅为示例）：

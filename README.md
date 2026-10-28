@@ -131,7 +131,7 @@ I²C 是 Inter-Integrated Circuit，两线串行总线。飞控通过 TCA9548 �
 | SH3 | 2 | BMP388/BMP390/BMP58x | 外界大气，压差基准 |
 | SH4 | 3 | SHT40 | 外界温湿度 |
 
-环境读数默认每秒通过飞控串口输出，开关、周期和海平面参考气压在
+环境读数默认每 5 秒通过飞控串口输出，开关、周期和海平面参考气压在
 `FCFM/App/Inc/fc_board_config.h` 中设置；详情和输出字段见 `FCFM/README.md`。
 
 ### 执行器命令
