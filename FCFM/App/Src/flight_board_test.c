@@ -6,6 +6,7 @@
 #include "balloon_radio_protocol.h"
 #include "cmsis_os.h"
 #include "e28_sx1281.h"
+#include "environment_display.h"
 #include "fc_board_config.h"
 #include "fatfs.h"
 #include "i2c.h"
@@ -13,6 +14,7 @@
 #include "main.h"
 #include "mmc5983ma.h"
 #include "queue.h"
+#include "semphr.h"
 #include "spi.h"
 #include "tca9548a.h"
 #include "task.h"
@@ -45,6 +47,7 @@
 #define MISSION_HEARTBEAT_TIMEOUT_MS 6000U
 #define SENSOR_SAMPLE_PERIOD_MS       100U
 #define SENSOR_RETRY_PERIOD_MS        1000U
+#define ENVIRONMENT_TASK_STACK_WORDS  768U
 #define MAG_STREAM_PERIOD_MS          500U
 #define MAG_STREAM_TARGET_ONBOARD     0x01U
 #define MAG_STREAM_TARGET_EXTERNAL    0x02U
@@ -217,6 +220,13 @@ typedef struct
   const char *model;
 } FlightBoardBarometerSample;
 
+typedef struct
+{
+  bool valid;
+  int32_t temperature_x100;
+  uint32_t humidity_x100;
+} FlightBoardHumiditySample;
+
 static volatile uint16_t usb_rx_head;
 static volatile uint16_t usb_rx_tail;
 static uint8_t usb_rx_queue[USB_RX_QUEUE_SIZE];
@@ -245,6 +255,18 @@ static bool mag_stream_enabled;
 static uint8_t mag_stream_target;
 static uint32_t mag_stream_next_tick;
 static uint32_t mag_stream_sequence;
+#if FC_ENVIRONMENT_STREAM_ENABLED
+static SemaphoreHandle_t environment_i2c_mutex;
+static StaticSemaphore_t environment_i2c_mutex_storage;
+static QueueHandle_t environment_sample_queue;
+static StaticQueue_t environment_sample_queue_control;
+static uint8_t environment_sample_queue_storage[sizeof(FlightBoardEnvironmentSample)];
+static StaticTask_t environment_task_control;
+static StackType_t environment_task_stack[ENVIRONMENT_TASK_STACK_WORDS];
+static uint32_t environment_next_output_tick;
+static char environment_usb_tx_buffer[256];
+extern USBD_HandleTypeDef hUsbDeviceFS;
+#endif
 static E28Sx1281 radio;
 static bool radio_attached;
 static bool radio_tx_armed;
@@ -328,6 +350,26 @@ _Static_assert(sizeof(FlightBoardLogRecord) <= 72U,
                "FlightBoardLogRecord must remain queue friendly");
 _Static_assert(FC_RADIO_DIO3_AVAILABLE == 0U,
                "V1.0.5 must never use grounded E28 DIO3");
+_Static_assert(FC_ENVIRONMENT_STREAM_ENABLED <= 1U,
+               "Environmental stream must be 0 or 1");
+_Static_assert(FC_ENVIRONMENT_STREAM_PERIOD_MS > 0U,
+               "Environmental stream period must be positive");
+_Static_assert(FC_ENVIRONMENT_STREAM_PERIOD_MS <= INT32_MAX / 2U,
+               "Environmental stream period is too large");
+_Static_assert(FC_ENVIRONMENT_SEA_LEVEL_PRESSURE_PA > 0U,
+               "Sea-level reference pressure must be positive");
+_Static_assert(FC_I2C_MUX_CHANNEL_BARO_INNER <= 7U &&
+               FC_I2C_MUX_CHANNEL_BARO_OUTER <= 7U &&
+               FC_I2C_MUX_CHANNEL_BARO_AMBIENT <= 7U &&
+               FC_I2C_MUX_CHANNEL_SHT40 <= 7U,
+               "Environmental sensor channels must be between 0 and 7");
+_Static_assert(FC_I2C_MUX_CHANNEL_BARO_INNER != FC_I2C_MUX_CHANNEL_BARO_OUTER &&
+               FC_I2C_MUX_CHANNEL_BARO_INNER != FC_I2C_MUX_CHANNEL_BARO_AMBIENT &&
+               FC_I2C_MUX_CHANNEL_BARO_OUTER != FC_I2C_MUX_CHANNEL_BARO_AMBIENT &&
+               FC_I2C_MUX_CHANNEL_SHT40 != FC_I2C_MUX_CHANNEL_BARO_INNER &&
+               FC_I2C_MUX_CHANNEL_SHT40 != FC_I2C_MUX_CHANNEL_BARO_OUTER &&
+               FC_I2C_MUX_CHANNEL_SHT40 != FC_I2C_MUX_CHANNEL_BARO_AMBIENT,
+               "Environmental sensors must use separate mux channels");
 
 static bool outputs_armed;
 static BoardActionState active_action;
@@ -390,6 +432,10 @@ static void FlightBoardTest_StopMagStream(void);
 static void FlightBoardTest_ServiceMagStream(void);
 static void FlightBoardTest_DiagnoseImuI2c(void);
 static void FlightBoardTest_Send(const char *format, ...);
+static bool FlightBoardTest_TryLockI2c(void);
+static void FlightBoardTest_UnlockI2c(void);
+static void FlightBoardTest_StartEnvironmentStream(void);
+static void FlightBoardTest_ServiceEnvironmentStream(void);
 static HAL_StatusTypeDef FlightBoardTest_ReadAdc(uint32_t *raw,
                                                  uint32_t *pin_mv);
 static bool FlightBoardTest_IsMissionSessionActive(void);
@@ -2678,6 +2724,26 @@ static void FlightBoardTest_ServiceMagStream(void)
   }
 }
 
+static bool FlightBoardTest_TryLockI2c(void)
+{
+#if FC_ENVIRONMENT_STREAM_ENABLED
+  return environment_i2c_mutex == NULL ||
+         xSemaphoreTake(environment_i2c_mutex, 0U) == pdTRUE;
+#else
+  return true;
+#endif
+}
+
+static void FlightBoardTest_UnlockI2c(void)
+{
+#if FC_ENVIRONMENT_STREAM_ENABLED
+  if (environment_i2c_mutex != NULL)
+  {
+    (void)xSemaphoreGive(environment_i2c_mutex);
+  }
+#endif
+}
+
 static void FlightBoardTest_ServiceMagSensor(
     Mmc5983ma *device,
     Mmc5983maSample *latest_sample,
@@ -2760,14 +2826,18 @@ static void FlightBoardTest_ServiceSensors(void)
     }
   }
 
-  FlightBoardTest_ServiceMagSensor(&mag_onboard,
-                                   &latest_mag_onboard_sample,
-                                   &mag_onboard_next_retry_tick,
-                                   now);
-  FlightBoardTest_ServiceMagSensor(&mag_external,
-                                   &latest_mag_external_sample,
-                                   &mag_external_next_retry_tick,
-                                   now);
+  if (FlightBoardTest_TryLockI2c())
+  {
+    FlightBoardTest_ServiceMagSensor(&mag_onboard,
+                                     &latest_mag_onboard_sample,
+                                     &mag_onboard_next_retry_tick,
+                                     now);
+    FlightBoardTest_ServiceMagSensor(&mag_external,
+                                     &latest_mag_external_sample,
+                                     &mag_external_next_retry_tick,
+                                     now);
+    FlightBoardTest_UnlockI2c();
+  }
 }
 
 static void FlightBoardTest_SendStatus(void)
@@ -3144,7 +3214,8 @@ static int32_t FlightBoardTest_DecodeSigned24(const uint8_t *data)
 static HAL_StatusTypeDef FlightBoardTest_TryReadBmp5(
     uint8_t channel,
     FlightBoardBarometerSample *sample,
-    bool *detected)
+    bool *detected,
+    bool verbose)
 {
   static const uint16_t addresses[] = {
       BMP5_ADDRESS_LOW_8BIT,
@@ -3188,13 +3259,16 @@ static HAL_StatusTypeDef FlightBoardTest_TryReadBmp5(
   sample->address_7bit = (uint8_t)(address_8bit >> 1U);
   sample->chip_id = chip_id;
   sample->model = "BMP58x";
-  FlightBoardTest_Send(
-      "FC baro detected connector=%s channel=%u model=%s address=0x%02X chip_id=0x%02X\r\n",
-      FlightBoardTest_BarometerConnectorName(channel),
-      (unsigned int)channel,
-      sample->model,
-      sample->address_7bit,
-      sample->chip_id);
+  if (verbose)
+  {
+    FlightBoardTest_Send(
+        "FC baro detected connector=%s channel=%u model=%s address=0x%02X chip_id=0x%02X\r\n",
+        FlightBoardTest_BarometerConnectorName(channel),
+        (unsigned int)channel,
+        sample->model,
+        sample->address_7bit,
+        sample->chip_id);
+  }
 
   step = "soft_reset";
   result = FlightBoardTest_Bmp3WriteRegister(address_8bit,
@@ -3337,26 +3411,29 @@ static HAL_StatusTypeDef FlightBoardTest_TryReadBmp5(
   temperature_magnitude = sample->temperature_x100 < 0
                               ? (uint32_t)(-sample->temperature_x100)
                               : (uint32_t)sample->temperature_x100;
-  FlightBoardTest_Send(
-      "FC baro data connector=%s channel=%u model=%s address=0x%02X "
-      "raw_temp=%ld raw_press=%lu temperature_c=%s%lu.%02lu "
-      "pressure_pa=%lu.%02lu status=0x%02X int_status=0x%02X "
-      "osr_effective=0x%02X result=%s\r\n",
-      FlightBoardTest_BarometerConnectorName(channel),
-      (unsigned int)channel,
-      sample->model,
-      sample->address_7bit,
-      (long)raw_temperature,
-      (unsigned long)raw_pressure,
-      sample->temperature_x100 < 0 ? "-" : "",
-      (unsigned long)(temperature_magnitude / 100U),
-      (unsigned long)(temperature_magnitude % 100U),
-      (unsigned long)(sample->pressure_x100 / 100U),
-      (unsigned long)(sample->pressure_x100 % 100U),
-      status,
-      int_status,
-      osr_effective,
-      sample->valid ? "PASS" : "OUT_OF_RANGE");
+  if (verbose)
+  {
+    FlightBoardTest_Send(
+        "FC baro data connector=%s channel=%u model=%s address=0x%02X "
+        "raw_temp=%ld raw_press=%lu temperature_c=%s%lu.%02lu "
+        "pressure_pa=%lu.%02lu status=0x%02X int_status=0x%02X "
+        "osr_effective=0x%02X result=%s\r\n",
+        FlightBoardTest_BarometerConnectorName(channel),
+        (unsigned int)channel,
+        sample->model,
+        sample->address_7bit,
+        (long)raw_temperature,
+        (unsigned long)raw_pressure,
+        sample->temperature_x100 < 0 ? "-" : "",
+        (unsigned long)(temperature_magnitude / 100U),
+        (unsigned long)(temperature_magnitude % 100U),
+        (unsigned long)(sample->pressure_x100 / 100U),
+        (unsigned long)(sample->pressure_x100 % 100U),
+        status,
+        int_status,
+        osr_effective,
+        sample->valid ? "PASS" : "OUT_OF_RANGE");
+  }
 
 finish:
   (void)FlightBoardTest_Bmp3WriteRegister(address_8bit,
@@ -3365,18 +3442,21 @@ finish:
   if (result != HAL_OK)
   {
     sample->valid = false;
-    FlightBoardTest_Send(
-        "FC baro failed connector=%s channel=%u model=BMP58x step=%s "
-        "hal=%u error=0x%08lX status=0x%02X int_status=0x%02X "
-        "osr_effective=0x%02X\r\n",
-        FlightBoardTest_BarometerConnectorName(channel),
-        (unsigned int)channel,
-        step,
-        (unsigned int)result,
-        (unsigned long)HAL_I2C_GetError(&hi2c1),
-        status,
-        int_status,
-        osr_effective);
+    if (verbose)
+    {
+      FlightBoardTest_Send(
+          "FC baro failed connector=%s channel=%u model=BMP58x step=%s "
+          "hal=%u error=0x%08lX status=0x%02X int_status=0x%02X "
+          "osr_effective=0x%02X\r\n",
+          FlightBoardTest_BarometerConnectorName(channel),
+          (unsigned int)channel,
+          step,
+          (unsigned int)result,
+          (unsigned long)HAL_I2C_GetError(&hi2c1),
+          status,
+          int_status,
+          osr_effective);
+    }
   }
   return result;
 }
@@ -3388,7 +3468,8 @@ static HAL_StatusTypeDef FlightBoardTest_SelectI2cMuxChannel(uint8_t channel,
 }
 
 static bool FlightBoardTest_ReadBarometer(uint8_t channel,
-                                          FlightBoardBarometerSample *sample)
+                                          FlightBoardBarometerSample *sample,
+                                          bool verbose)
 {
   static const uint16_t addresses[] = {
       BMP3_ADDRESS_LOW_8BIT,
@@ -3420,8 +3501,11 @@ static bool FlightBoardTest_ReadBarometer(uint8_t channel,
 
   if (channel > 7U)
   {
-    FlightBoardTest_Send(
-        "FC baro rejected reason=channel_range valid=0..7\r\n");
+    if (verbose)
+    {
+      FlightBoardTest_Send(
+          "FC baro rejected reason=channel_range valid=0..7\r\n");
+    }
     return false;
   }
 
@@ -3431,7 +3515,7 @@ static bool FlightBoardTest_ReadBarometer(uint8_t channel,
     goto cleanup;
   }
 
-  result = FlightBoardTest_TryReadBmp5(channel, sample, &bmp5_detected);
+  result = FlightBoardTest_TryReadBmp5(channel, sample, &bmp5_detected, verbose);
   if (bmp5_detected)
   {
     (void)HAL_I2C_Master_Transmit(
@@ -3460,13 +3544,16 @@ static bool FlightBoardTest_ReadBarometer(uint8_t channel,
     goto cleanup;
   }
 
-  FlightBoardTest_Send(
-      "FC baro detected connector=%s channel=%u model=%s address=0x%02X chip_id=0x%02X\r\n",
-      FlightBoardTest_BarometerConnectorName(channel),
-      (unsigned int)channel,
-      FlightBoardTest_Bmp3ModelName(chip_id),
-      (unsigned int)(address_8bit >> 1U),
-      chip_id);
+  if (verbose)
+  {
+    FlightBoardTest_Send(
+        "FC baro detected connector=%s channel=%u model=%s address=0x%02X chip_id=0x%02X\r\n",
+        FlightBoardTest_BarometerConnectorName(channel),
+        (unsigned int)channel,
+        FlightBoardTest_Bmp3ModelName(chip_id),
+        (unsigned int)(address_8bit >> 1U),
+        chip_id);
+  }
 
   step = "command_ready";
   result = FlightBoardTest_Bmp3ReadRegisters(address_8bit,
@@ -3607,23 +3694,26 @@ static bool FlightBoardTest_ReadBarometer(uint8_t channel,
   sample->pressure_x100 = pressure_x100;
   sample->model = FlightBoardTest_Bmp3ModelName(chip_id);
 
-  FlightBoardTest_Send(
-      "FC baro data connector=%s channel=%u model=%s address=0x%02X "
-      "raw_temp=%lu raw_press=%lu temperature_c=%s%lu.%02lu "
-      "pressure_pa=%lu.%02lu status=0x%02X result=%s\r\n",
-      FlightBoardTest_BarometerConnectorName(channel),
-      (unsigned int)channel,
-      FlightBoardTest_Bmp3ModelName(chip_id),
-      (unsigned int)(address_8bit >> 1U),
-      (unsigned long)raw_temperature,
-      (unsigned long)raw_pressure,
-      temperature_x100 < 0 ? "-" : "",
-      (unsigned long)(temperature_magnitude / 100U),
-      (unsigned long)(temperature_magnitude % 100U),
-      (unsigned long)(pressure_x100 / 100U),
-      (unsigned long)(pressure_x100 % 100U),
-      status,
-      success ? "PASS" : "OUT_OF_RANGE");
+  if (verbose)
+  {
+    FlightBoardTest_Send(
+        "FC baro data connector=%s channel=%u model=%s address=0x%02X "
+        "raw_temp=%lu raw_press=%lu temperature_c=%s%lu.%02lu "
+        "pressure_pa=%lu.%02lu status=0x%02X result=%s\r\n",
+        FlightBoardTest_BarometerConnectorName(channel),
+        (unsigned int)channel,
+        FlightBoardTest_Bmp3ModelName(chip_id),
+        (unsigned int)(address_8bit >> 1U),
+        (unsigned long)raw_temperature,
+        (unsigned long)raw_pressure,
+        temperature_x100 < 0 ? "-" : "",
+        (unsigned long)(temperature_magnitude / 100U),
+        (unsigned long)(temperature_magnitude % 100U),
+        (unsigned long)(pressure_x100 / 100U),
+        (unsigned long)(pressure_x100 % 100U),
+        status,
+        success ? "PASS" : "OUT_OF_RANGE");
+  }
 
 cleanup:
   if (address_8bit != 0U)
@@ -3637,16 +3727,19 @@ cleanup:
   if ((result != HAL_OK) || (address_8bit == 0U))
   {
     sample->valid = false;
-    FlightBoardTest_Send(
-        "FC baro failed connector=%s channel=%u step=%s hal=%u error=0x%08lX "
-        "control=0x%02X chip_id=0x%02X\r\n",
-        FlightBoardTest_BarometerConnectorName(channel),
-        (unsigned int)channel,
-        step,
-        (unsigned int)result,
-        (unsigned long)HAL_I2C_GetError(&hi2c1),
-        control,
-        chip_id);
+    if (verbose)
+    {
+      FlightBoardTest_Send(
+          "FC baro failed connector=%s channel=%u step=%s hal=%u error=0x%08lX "
+          "control=0x%02X chip_id=0x%02X\r\n",
+          FlightBoardTest_BarometerConnectorName(channel),
+          (unsigned int)channel,
+          step,
+          (unsigned int)result,
+          (unsigned long)HAL_I2C_GetError(&hi2c1),
+          control,
+          chip_id);
+    }
   }
   return (result == HAL_OK) && success;
 }
@@ -3656,29 +3749,24 @@ static void FlightBoardTest_ReadExpectedBarometers(void)
   static const struct
   {
     uint8_t channel;
-    const char *connector;
-    const char *expected_model;
+    const char *role;
   } expected[] = {
-      {FC_I2C_MUX_CHANNEL_BARO_1, "SH1", "BMP580"},
-      {FC_I2C_MUX_CHANNEL_BARO_2, "SH2", "BMP580"},
-      {FC_I2C_MUX_CHANNEL_BARO_3, "SH3", "BMP580"}};
+      {FC_I2C_MUX_CHANNEL_BARO_INNER, "inner"},
+      {FC_I2C_MUX_CHANNEL_BARO_OUTER, "outer"},
+      {FC_I2C_MUX_CHANNEL_BARO_AMBIENT, "ambient"}};
   FlightBoardBarometerSample samples[3] = {0};
   bool valid[3] = {false, false, false};
   size_t index;
   uint32_t pass_count = 0U;
 
-  FlightBoardTest_Send(
-      "FC baro all begin mapping=SH1/ch0:BMP580,SH2/ch1:BMP580,SH3/ch2:BMP580\r\n");
+  FlightBoardTest_Send("FC baro all begin inner_ch=%u outer_ch=%u ambient_ch=%u\r\n",
+                       (unsigned int)FC_I2C_MUX_CHANNEL_BARO_INNER,
+                       (unsigned int)FC_I2C_MUX_CHANNEL_BARO_OUTER,
+                       (unsigned int)FC_I2C_MUX_CHANNEL_BARO_AMBIENT);
   for (index = 0U; index < (sizeof(expected) / sizeof(expected[0])); ++index)
   {
-    bool measurement_valid = FlightBoardTest_ReadBarometer(
-        expected[index].channel, &samples[index]);
-    bool expected_model =
-        FlightBoardTest_IsBmp5ChipId(samples[index].chip_id) &&
-        ((samples[index].address_7bit == 0x46U) ||
-         (samples[index].address_7bit == 0x47U));
-
-    valid[index] = measurement_valid && expected_model;
+    valid[index] = FlightBoardTest_ReadBarometer(
+        expected[index].channel, &samples[index], true);
     if (valid[index])
     {
       ++pass_count;
@@ -3687,20 +3775,20 @@ static void FlightBoardTest_ReadExpectedBarometers(void)
 
   for (index = 0U; index < (sizeof(expected) / sizeof(expected[0])); ++index)
   {
-    if (valid[index] && valid[0])
+    if (valid[index] && valid[2])
     {
       int32_t delta_x100 = (int32_t)samples[index].pressure_x100 -
-                           (int32_t)samples[0].pressure_x100;
+                           (int32_t)samples[2].pressure_x100;
       uint32_t delta_magnitude = delta_x100 < 0
                                      ? (uint32_t)(-delta_x100)
                                      : (uint32_t)delta_x100;
 
       FlightBoardTest_Send(
-          "FC baro summary connector=%s channel=%u expected=%s detected=%s "
-          "address=0x%02X pressure_pa=%lu.%02lu delta_vs_sh1_pa=%s%lu.%02lu result=PASS\r\n",
-          expected[index].connector,
+          "FC baro summary connector=%s channel=%u role=%s detected=%s "
+          "address=0x%02X pressure_pa=%lu.%02lu delta_vs_ambient_pa=%s%lu.%02lu result=PASS\r\n",
+          FlightBoardTest_BarometerConnectorName(expected[index].channel),
           (unsigned int)expected[index].channel,
-          expected[index].expected_model,
+          expected[index].role,
           samples[index].model,
           samples[index].address_7bit,
           (unsigned long)(samples[index].pressure_x100 / 100U),
@@ -3712,12 +3800,12 @@ static void FlightBoardTest_ReadExpectedBarometers(void)
     else if (valid[index])
     {
       FlightBoardTest_Send(
-          "FC baro summary connector=%s channel=%u expected=%s detected=%s "
-          "address=0x%02X pressure_pa=%lu.%02lu delta_vs_sh1_pa=unavailable "
+          "FC baro summary connector=%s channel=%u role=%s detected=%s "
+          "address=0x%02X pressure_pa=%lu.%02lu delta_vs_ambient_pa=unavailable "
           "result=PASS\r\n",
-          expected[index].connector,
+          FlightBoardTest_BarometerConnectorName(expected[index].channel),
           (unsigned int)expected[index].channel,
-          expected[index].expected_model,
+          expected[index].role,
           samples[index].model,
           samples[index].address_7bit,
           (unsigned long)(samples[index].pressure_x100 / 100U),
@@ -3726,11 +3814,11 @@ static void FlightBoardTest_ReadExpectedBarometers(void)
     else
     {
       FlightBoardTest_Send(
-          "FC baro summary connector=%s channel=%u expected=%s detected=%s "
-          "delta_vs_sh1_pa=unavailable result=FAIL\r\n",
-          expected[index].connector,
+          "FC baro summary connector=%s channel=%u role=%s detected=%s "
+          "delta_vs_ambient_pa=unavailable result=FAIL\r\n",
+          FlightBoardTest_BarometerConnectorName(expected[index].channel),
           (unsigned int)expected[index].channel,
-          expected[index].expected_model,
+          expected[index].role,
           samples[index].model != NULL ? samples[index].model : "UNKNOWN");
     }
   }
@@ -3761,7 +3849,9 @@ static uint8_t FlightBoardTest_Sht40Crc(const uint8_t *data, size_t length)
   return crc;
 }
 
-static bool FlightBoardTest_ReadSht40(uint8_t channel)
+static bool FlightBoardTest_ReadSht40(uint8_t channel,
+                                      FlightBoardHumiditySample *sample,
+                                      bool verbose)
 {
   static const uint16_t addresses[] = {
       SHT40_ADDRESS_PRIMARY_8BIT,
@@ -3784,10 +3874,14 @@ static bool FlightBoardTest_ReadSht40(uint8_t channel)
   bool crc_valid;
   bool plausible;
 
+  memset(sample, 0, sizeof(*sample));
   if (channel > 7U)
   {
-    FlightBoardTest_Send(
-        "FC sht40 rejected reason=channel_range valid=0..7\r\n");
+    if (verbose)
+    {
+      FlightBoardTest_Send(
+          "FC sht40 rejected reason=channel_range valid=0..7\r\n");
+    }
     return false;
   }
 
@@ -3852,27 +3946,33 @@ static bool FlightBoardTest_ReadSht40(uint8_t channel)
   plausible = crc_valid &&
               (temperature_x100 >= -4000) &&
               (temperature_x100 <= 12500);
+  sample->valid = plausible;
+  sample->temperature_x100 = temperature_x100;
+  sample->humidity_x100 = (uint32_t)humidity_x100;
   temperature_magnitude = temperature_x100 < 0
                               ? (uint32_t)(-temperature_x100)
                               : (uint32_t)temperature_x100;
   humidity_magnitude = (uint32_t)humidity_x100;
 
-  FlightBoardTest_Send(
-      "FC sht40 data connector=SH4 channel=%u model=SHT40 address=0x%02X "
-      "raw_temp=%u raw_rh=%u temperature_c=%s%lu.%02lu humidity_rh=%lu.%02lu "
-      "crc=%s rh_clamped=%u result=%s\r\n",
-      (unsigned int)channel,
-      (unsigned int)(address_8bit >> 1U),
-      (unsigned int)raw_temperature,
-      (unsigned int)raw_humidity,
-      temperature_x100 < 0 ? "-" : "",
-      (unsigned long)(temperature_magnitude / 100U),
-      (unsigned long)(temperature_magnitude % 100U),
-      (unsigned long)(humidity_magnitude / 100U),
-      (unsigned long)(humidity_magnitude % 100U),
-      crc_valid ? "PASS" : "FAIL",
-      humidity_x100 != humidity_uncropped_x100 ? 1U : 0U,
-      plausible ? "PASS" : "FAIL");
+  if (verbose)
+  {
+    FlightBoardTest_Send(
+        "FC sht40 data connector=SH4 channel=%u model=SHT40 address=0x%02X "
+        "raw_temp=%u raw_rh=%u temperature_c=%s%lu.%02lu humidity_rh=%lu.%02lu "
+        "crc=%s rh_clamped=%u result=%s\r\n",
+        (unsigned int)channel,
+        (unsigned int)(address_8bit >> 1U),
+        (unsigned int)raw_temperature,
+        (unsigned int)raw_humidity,
+        temperature_x100 < 0 ? "-" : "",
+        (unsigned long)(temperature_magnitude / 100U),
+        (unsigned long)(temperature_magnitude % 100U),
+        (unsigned long)(humidity_magnitude / 100U),
+        (unsigned long)(humidity_magnitude % 100U),
+        crc_valid ? "PASS" : "FAIL",
+        humidity_x100 != humidity_uncropped_x100 ? 1U : 0U,
+        plausible ? "PASS" : "FAIL");
+  }
 
   (void)HAL_I2C_Master_Transmit(
       &hi2c1, TCA9548_ADDRESS_8BIT, &disable, 1U, 50U);
@@ -3881,25 +3981,169 @@ static bool FlightBoardTest_ReadSht40(uint8_t channel)
 cleanup:
   (void)HAL_I2C_Master_Transmit(
       &hi2c1, TCA9548_ADDRESS_8BIT, &disable, 1U, 50U);
-  FlightBoardTest_Send(
-      "FC sht40 failed connector=SH4 channel=%u step=%s hal=%u "
-      "error=0x%08lX control=0x%02X result=FAIL\r\n",
-      (unsigned int)channel,
-      step,
-      (unsigned int)result,
-      (unsigned long)HAL_I2C_GetError(&hi2c1),
-      control);
+  if (verbose)
+  {
+    FlightBoardTest_Send(
+        "FC sht40 failed connector=SH4 channel=%u step=%s hal=%u "
+        "error=0x%08lX control=0x%02X result=FAIL\r\n",
+        (unsigned int)channel,
+        step,
+        (unsigned int)result,
+        (unsigned long)HAL_I2C_GetError(&hi2c1),
+        control);
+  }
   return false;
+}
+
+#if FC_ENVIRONMENT_STREAM_ENABLED
+/* The background reader holds I2C1 only for one sensor at a time. */
+static bool FlightBoardTest_ReadEnvironmentPressure(uint8_t channel,
+                                                    uint32_t *pressure_x100)
+{
+  FlightBoardBarometerSample pressure;
+  bool valid = false;
+
+  if (xSemaphoreTake(environment_i2c_mutex, pdMS_TO_TICKS(20U)) == pdTRUE)
+  {
+    valid = FlightBoardTest_ReadBarometer(channel, &pressure, false);
+    if (valid)
+    {
+      *pressure_x100 = pressure.pressure_x100;
+    }
+    (void)xSemaphoreGive(environment_i2c_mutex);
+  }
+  return valid;
+}
+
+static void FlightBoardTest_EnvironmentTask(void *argument)
+{
+  TickType_t last_wake = xTaskGetTickCount();
+  const TickType_t period = pdMS_TO_TICKS(FC_ENVIRONMENT_STREAM_PERIOD_MS);
+
+  (void)argument;
+  for (;;)
+  {
+    FlightBoardEnvironmentSample sample = {0};
+    FlightBoardHumiditySample humidity;
+
+    sample.sample_started_ms = HAL_GetTick();
+    sample.ambient_valid = FlightBoardTest_ReadEnvironmentPressure(
+        FC_I2C_MUX_CHANNEL_BARO_AMBIENT, &sample.ambient_pressure_x100);
+    sample.outer_valid = FlightBoardTest_ReadEnvironmentPressure(
+        FC_I2C_MUX_CHANNEL_BARO_OUTER, &sample.outer_pressure_x100);
+    sample.inner_valid = FlightBoardTest_ReadEnvironmentPressure(
+        FC_I2C_MUX_CHANNEL_BARO_INNER, &sample.inner_pressure_x100);
+    if (xSemaphoreTake(environment_i2c_mutex, pdMS_TO_TICKS(20U)) == pdTRUE)
+    {
+      sample.humidity_valid = FlightBoardTest_ReadSht40(
+          FC_I2C_MUX_CHANNEL_SHT40, &humidity, false);
+      if (sample.humidity_valid)
+      {
+        sample.temperature_x100 = humidity.temperature_x100;
+        sample.humidity_x100 = humidity.humidity_x100;
+      }
+      (void)xSemaphoreGive(environment_i2c_mutex);
+    }
+    /* Publish only this sweep, including invalid fields, so old values cannot masquerade as new. */
+    (void)xQueueOverwrite(environment_sample_queue, &sample);
+
+    if ((TickType_t)(xTaskGetTickCount() - last_wake) >= period)
+    {
+      last_wake = xTaskGetTickCount();
+    }
+    vTaskDelayUntil(&last_wake, period);
+  }
+}
+#endif
+
+static void FlightBoardTest_StartEnvironmentStream(void)
+{
+#if FC_ENVIRONMENT_STREAM_ENABLED
+  TaskHandle_t task;
+
+  environment_i2c_mutex = xSemaphoreCreateMutexStatic(&environment_i2c_mutex_storage);
+  environment_sample_queue = xQueueCreateStatic(
+      1U, sizeof(FlightBoardEnvironmentSample), environment_sample_queue_storage,
+      &environment_sample_queue_control);
+  if (environment_i2c_mutex == NULL || environment_sample_queue == NULL)
+  {
+    environment_sample_queue = NULL;
+    FlightBoardTest_Send("FC env unavailable reason=resource_init\r\n");
+    return;
+  }
+  task = xTaskCreateStatic(FlightBoardTest_EnvironmentTask, "FCEnv",
+                           ENVIRONMENT_TASK_STACK_WORDS, NULL,
+                           tskIDLE_PRIORITY + 1U, environment_task_stack,
+                           &environment_task_control);
+  if (task == NULL)
+  {
+    environment_sample_queue = NULL;
+    FlightBoardTest_Send("FC env unavailable reason=task_init\r\n");
+    return;
+  }
+  environment_next_output_tick = HAL_GetTick() + FC_ENVIRONMENT_STREAM_PERIOD_MS;
+#endif
+}
+
+static void FlightBoardTest_ServiceEnvironmentStream(void)
+{
+#if FC_ENVIRONMENT_STREAM_ENABLED
+  FlightBoardEnvironmentSample sample = {0};
+  USBD_CDC_HandleTypeDef *usb_cdc;
+  uint32_t now = HAL_GetTick();
+  uint32_t age_ms = UINT32_MAX;
+  int length;
+
+  if (environment_sample_queue == NULL ||
+      (int32_t)(now - environment_next_output_tick) < 0)
+  {
+    return;
+  }
+  environment_next_output_tick = now + FC_ENVIRONMENT_STREAM_PERIOD_MS;
+  if (hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED || hUsbDeviceFS.pClassData == NULL)
+  {
+    return;
+  }
+  usb_cdc = (USBD_CDC_HandleTypeDef *)hUsbDeviceFS.pClassData;
+  /* USB retains the transmit buffer until completion; never wait in the control task. */
+  if (usb_cdc->TxState != 0U)
+  {
+    return;
+  }
+  if (xQueuePeek(environment_sample_queue, &sample, 0U) == pdTRUE)
+  {
+    age_ms = now - sample.sample_started_ms;
+    if (age_ms > FC_ENVIRONMENT_STREAM_PERIOD_MS * 2U)
+    {
+      sample.humidity_valid = false;
+      sample.ambient_valid = false;
+      sample.outer_valid = false;
+      sample.inner_valid = false;
+    }
+  }
+  length = FlightBoardEnvironment_Format(environment_usb_tx_buffer,
+                                         sizeof(environment_usb_tx_buffer),
+                                         &sample, age_ms,
+                                         FC_ENVIRONMENT_SEA_LEVEL_PRESSURE_PA);
+  if (length > 0 && (size_t)length < sizeof(environment_usb_tx_buffer))
+  {
+    (void)CDC_Transmit_FS((uint8_t *)environment_usb_tx_buffer, (uint16_t)length);
+  }
+#endif
 }
 
 static void FlightBoardTest_ReadExpectedEnvironmentalSensors(void)
 {
+  FlightBoardHumiditySample humidity;
+
   FlightBoardTest_Send(
-      "FC sensors all begin mapping=SH1/ch0:BMP580,SH2/ch1:BMP580,"
-      "SH3/ch2:BMP580,SH4/ch3:SHT40,onboard/ch4:MMC5983MA,"
-      "external/SH7/ch5:MMC5983MA\r\n");
+      "FC sensors all begin inner_ch=%u outer_ch=%u ambient_ch=%u sht40_ch=%u\r\n",
+      (unsigned int)FC_I2C_MUX_CHANNEL_BARO_INNER,
+      (unsigned int)FC_I2C_MUX_CHANNEL_BARO_OUTER,
+      (unsigned int)FC_I2C_MUX_CHANNEL_BARO_AMBIENT,
+      (unsigned int)FC_I2C_MUX_CHANNEL_SHT40);
   FlightBoardTest_ReadExpectedBarometers();
-  (void)FlightBoardTest_ReadSht40(FC_I2C_MUX_CHANNEL_SHT40);
+  (void)FlightBoardTest_ReadSht40(FC_I2C_MUX_CHANNEL_SHT40, &humidity, true);
   FlightBoardTest_SendAllMagDetails();
   FlightBoardTest_Send("FC sensors all end note=review_individual_results\r\n");
 }
@@ -5718,7 +5962,9 @@ static void FlightBoardTest_HandleCommand(char *command)
   }
   else if (strcmp(command, "sht40") == 0)
   {
-    (void)FlightBoardTest_ReadSht40(FC_I2C_MUX_CHANNEL_SHT40);
+    FlightBoardHumiditySample humidity;
+
+    (void)FlightBoardTest_ReadSht40(FC_I2C_MUX_CHANNEL_SHT40, &humidity, true);
   }
   else if (strcmp(command, "sensors all") == 0)
   {
@@ -5738,7 +5984,7 @@ static void FlightBoardTest_HandleCommand(char *command)
     {
       FlightBoardBarometerSample sample;
 
-      (void)FlightBoardTest_ReadBarometer((uint8_t)channel, &sample);
+      (void)FlightBoardTest_ReadBarometer((uint8_t)channel, &sample, true);
     }
   }
   else if ((fields = sscanf(command,
@@ -5872,6 +6118,34 @@ static void FlightBoardTest_HandleCommand(char *command)
   }
 }
 
+static bool FlightBoardTest_CommandUsesI2c(const char *command)
+{
+  return (FlightBoardTest_CommandStartsWithNoCase(command, "test") && command[4] == '\0') ||
+         FlightBoardTest_CommandStartsWithNoCase(command, "i2c") ||
+         (FlightBoardTest_CommandStartsWithNoCase(command, "baro") &&
+          (command[4] == '\0' || command[4] == ' ')) ||
+         (FlightBoardTest_CommandStartsWithNoCase(command, "mag") &&
+          (command[3] == '\0' || command[3] == ' ')) ||
+         (FlightBoardTest_CommandStartsWithNoCase(command, "sht40") && command[5] == '\0') ||
+         (FlightBoardTest_CommandStartsWithNoCase(command, "sensors all") && command[11] == '\0');
+}
+
+static void FlightBoardTest_DispatchCommand(char *command)
+{
+  bool uses_i2c = FlightBoardTest_CommandUsesI2c(command);
+
+  if (uses_i2c && !FlightBoardTest_TryLockI2c())
+  {
+    FlightBoardTest_Send("FC i2c busy reason=environment_sampling retry=1\r\n");
+    return;
+  }
+  FlightBoardTest_HandleCommand(command);
+  if (uses_i2c)
+  {
+    FlightBoardTest_UnlockI2c();
+  }
+}
+
 static void FlightBoardTest_ProcessUsbCommands(void)
 {
   static char command[COMMAND_BUFFER_SIZE];
@@ -5889,7 +6163,7 @@ static void FlightBoardTest_ProcessUsbCommands(void)
     }
     else
     {
-      FlightBoardTest_HandleCommand(command);
+      FlightBoardTest_DispatchCommand(command);
       command_length = 0U;
       command_ready = false;
       if (radio.mode == E28_SX1281_MODE_TX)
@@ -5914,7 +6188,7 @@ static void FlightBoardTest_ProcessUsbCommands(void)
           command_ready = false;
           continue;
         }
-        FlightBoardTest_HandleCommand(command);
+        FlightBoardTest_DispatchCommand(command);
         command_length = 0U;
         command_ready = false;
         if (radio.mode == E28_SX1281_MODE_TX)
@@ -6006,6 +6280,7 @@ void FlightBoardTest_Run(void)
   outputs_armed = false;
   FlightBoardTest_Send("FC imu boot_init begin mode=maintenance\r\n");
   FlightBoardTest_ResetAndProbeImu();
+  FlightBoardTest_StartEnvironmentStream();
 
   for (;;)
   {
@@ -6020,6 +6295,7 @@ void FlightBoardTest_Run(void)
       FlightBoardTest_ServiceImuStream();
       FlightBoardTest_ServiceMission();
       FlightBoardTest_ServiceMissionLogging();
+      FlightBoardTest_ServiceEnvironmentStream();
     }
     FlightBoardTest_ProcessUsbCommands();
     osDelay(5U);

@@ -25,7 +25,7 @@
 成功后烧录：
 
 ```text
-飞控：build\Debug\FCFM_BOARD_TEST_V1.0.5.10.hex
+飞控：build\Debug\FCFM_BOARD_TEST_V1.0.5.11.hex
 地面站：build\Debug\GROUND_STATION_BOARD_TEST_V1.1.0.10.hex
 ```
 
