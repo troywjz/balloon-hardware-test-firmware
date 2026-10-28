@@ -20,13 +20,13 @@
 /* 单次执行器动作最长时长，单位为毫秒（5 分钟）。 */
 #define FC_ACTUATOR_MAX_DURATION_MS 300000U
 
-/* Enable the once-per-second environmental display: 1 enables it, 0 disables it. */
-/* 每秒环境数据显示开关：1 开启，0 关闭。 */
+/* Enable environmental display: 1 enables it, 0 disables it. */
+/* 环境数据显示开关：1 开启，0 关闭。 */
 #define FC_ENVIRONMENT_STREAM_ENABLED 1U
 
 /* Environmental display interval in milliseconds. */
 /* 环境数据显示间隔，单位为毫秒。 */
-#define FC_ENVIRONMENT_STREAM_PERIOD_MS 1000U
+#define FC_ENVIRONMENT_STREAM_PERIOD_MS 5000U
 
 /* Sea-level reference pressure for the standard-atmosphere altitude, in pascals. */
 /* 标准大气气压高度使用的海平面参考气压，单位为帕。 */
